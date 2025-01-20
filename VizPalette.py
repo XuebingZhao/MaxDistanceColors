@@ -6,8 +6,8 @@ from time import perf_counter as timer
 import numpy as np
 from scipy.spatial import cKDTree, Delaunay
 import matplotlib.pyplot as plt
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import colour
-
 
 colour.set_domain_range_scale("1")
 RGB_SPACES = [
@@ -50,6 +50,67 @@ DE_SPACES_MAP = {
     'CAM16-LCD': 'CAM16LCD',
     'CAM16-SCD': 'CAM16SCD',
     'CAM16-UCS': 'CAM16UCS'
+}
+# 根据颜色空间设置标签
+LABEL_DICT = {
+    'CIE XYZ': ["X", "Y", "Z"],
+    'CIE xyY': ["x", "y", "Y"],
+    'CIE Lab': ["L*", "a*", "b*"],
+    'CIE Luv': ["L*", "u*", "v*"],
+    'CIE 1976 UCS': ["u'", "v'", "L"],
+    'CIE UCS': ["U", "V", "W"],
+    'CIE 1960 UCS': ["u", "v", "V"],
+    'CIE UVW': ["U*", "V*", "W*"],
+    'Hunter Lab': ["L", "a", "b"],
+    'Hunter Rdab': ["Rd", "a", "b"],
+    'DIN99': ["L_{99}", "a_{99}", "b_{99}"],
+    'ICaCb': ["I", "C_A", "C_Bb"],
+    'IgPgTg': ["I_G", "P_G", "T_G"],
+    'IPT': ["I", "P", "T"],
+    'IPT Ragoo 2021': ["I", "P", "T"],
+    'hdr-CIELAB': ["L_{hdr}", "a_{hdr}", "b_{hdr}"],
+    'hdr-IPT': ["I_{hdr}", "P_{hdr}", "T_{hdr}"],
+    'Oklab': ["L", "a", "b"],
+    'OSA UCS': ["L", "j", "g"],
+    'ProLab': ["L", "a", "b"],
+    'Yrg': ["Y", "r", "g"],
+    'Jzazaz': ["J_z", "a_z", "b_z"],
+    'Izazbz': ["I_z", "a_z", "b_z"],
+    'YCbCr': ["Y'", "Cb", "Cr"],
+    'YcCbcCrc': ["Y'", "Cbc'", "Crc'"],
+    'YCoCg': ["Y", "Co", "Cg"],
+    'ICtCp': ["I", "C_T", "C_P"],
+    'HSV': ["Hue", "Saturation", "Value"],
+    'HSL': ["Hue", "Saturation", "Lightness"],
+    'HCL': ["Hue", "Chroma", "Lightness"],
+    'CMY': ["Cyan", "Magenta", "Yellow"],
+    'IHLS': ["H", "Y", "S"],
+}
+SIM_PARAMS = {
+    'low': {
+        'dt': 0.001,
+        't_end': 500,
+        'steps': 20000,
+        't_tol': 0.0005,
+        'skip': 2,
+        'damping': 0.95
+    },
+    'medium': {
+        'dt': 0.0001,
+        't_end': 1000,
+        'steps': 100000,
+        't_tol': 0.0002,
+        'skip': 3,
+        'damping': 0.99
+    },
+    'high': {
+        'dt': 0.0001,
+        't_end': 2000,
+        'steps': 300000,
+        't_tol': 0.00005,
+        'skip': 5,
+        'damping': 0.998
+    }
 }
 
 
@@ -120,7 +181,7 @@ def deltaE(color_a, color_b, color_space='sRGB', metric='CIE 2000'):
     return delta_e
 
 
-def get_boundary_hull(res=8, boundary='sRGB', workspace='CAM16-UCS'):
+def get_boundary_hull(res=9, boundary='sRGB', workspace='CAM16-UCS'):
     """
     Generate a Delaunay triangulation of the boundary of the given color space in the given workspace.
     :param res: Grid resolution of each dimension.
@@ -189,9 +250,9 @@ def compute_forces(pos, tree, kf=2):
     # Nearest k-1 particles to each particle
     nearest_particles = pos[indices[:, 1:]]  # 形状: (N, k-1, 3)
     force_directions = nearest_particles - pos[:, np.newaxis, :]  # 形状: (N, k-1, 3)
-    safe_dists = np.maximum(dists[:, 1:], 1e-10)  # 避免除零，形状: (N, k-1)
+    dists = np.maximum(dists[:, 1:], 1e-10)  # 避免除零，形状: (N, k-1)
     # Compute the force magnitudes and directions
-    force_magnitudes = -kf / safe_dists ** 1  # 力的大小，形状: (N, k-1)
+    force_magnitudes = -kf / dists ** 1  # 力的大小，形状: (N, k-1)
     forces = force_directions * force_magnitudes[:, :, np.newaxis]  # 力，形状: (N, k-1, 3)
     forces = forces.sum(axis=1)  # 总的力，形状: (N, 3)
 
@@ -237,7 +298,7 @@ def deal_out_of_bounds(s, v, dt, **kwargs):
 
         # Update the velocity of the out-of-bounds particles
         v_magnitudes = np.linalg.norm(v[out_of_bounds], axis=1)  # Their original speeds
-        v[out_of_bounds] = 0.999 * v_magnitudes[:, np.newaxis] * random_vectors  # New velocity vector
+        v[out_of_bounds] = 0.99 * v_magnitudes[:, np.newaxis] * random_vectors  # New velocity vector
 
     return s, v
 
@@ -272,7 +333,7 @@ def maximize_delta_e(
 
     # Deal with given initial points
     if p0 is None:
-        p0 = []
+        p0 = [[]]
     p0 = auto_convert(np.array(p0), source=source, target=uniform)
     num_fixed = len(p0)
 
@@ -318,7 +379,7 @@ def maximize_delta_e(
                 step /= 1.2
 
             all_step.append(step)
-            all_time.append(time+step)
+            all_time.append(time + step)
 
             if dmin > max_dmin:
                 max_dmin = dmin
@@ -334,50 +395,95 @@ def maximize_delta_e(
 
     # Convert the colors back to the source space
     colors = auto_convert(best_pos, source=uniform, target=source)
-    print(f"Max and Min values: {np.max(colors)}, {np.min(colors)}")
+    # print(f"Max and Min values: {np.max(colors)}, {np.min(colors)}")
 
-    return np.array(all_time), np.array(d_mins)*100, np.array(colors), np.array(all_step)
+    return np.array(all_time), np.array(d_mins) * 100, np.array(colors), np.array(all_step)
 
 
-def plot_points(a, t, y, ylabel="Y", source_space='sRGB', target_space='CIE xyY'):
+def run(numbers, given_colors, target_space, metric_space, quality, seed=None):
+    # Deal with default colors list
+    if given_colors is None:
+        given_colors = np.array([[1, 1, 1]])
+    if len(np.shape(np.array(given_colors))) == 1:
+        given_colors = np.array([given_colors])
+
+    kwargs = SIM_PARAMS.get(quality, SIM_PARAMS['medium'])
+
+    # Execute the simulation
+    t0 = timer()
+    times, dmin_list, points, dt_list = maximize_delta_e(
+        numbers, given_colors, target_space, metric_space,
+        seed=seed,
+        **kwargs
+    )
+    t1 = timer()
+    # print(f"Simulation time: {(t1 - t0) * 1000:.2f} ms")
+
+    hex_colors = colour.notation.RGB_to_HEX(np.clip(points, 0, 1))  # 转换为HEX格式
+
+    return hex_colors, dmin_list.max(), points, times, dmin_list, dt_list
+
+
+def single_run(numbers, given_colors=None, target_space='sRGB', metric_space='CAM16-UCS', quality="medium"):
+    hex_colors, dmin_max, points, times, dmin_list, dt_list = run(
+        numbers, given_colors, target_space, metric_space, quality
+    )
+
+    # 可视化结果
+    plot_points(points, times, dmin_list, "Time", r"Minimum $\Delta E$", source_space=target_space, target_space=metric_space)
+
+    print(f"First 20 generated points in HEX format:\n{hex_colors[:20]}\n")
+    print(f"Best ΔE_min: {dmin_max:.2f}")
+
+    return hex_colors, dmin_max
+
+
+def multi_run(numbers, given_colors=None, target_space='sRGB', metric_space='CAM16-UCS', quality="low", num_runs=20):
+    # Deal with default colors list
+    if given_colors is None:
+        given_colors = np.array([[1, 1, 1]])
+    if len(np.shape(np.array(given_colors))) == 1:
+        given_colors = np.array([given_colors])
+
+    # Execute the simulation
+    t0 = timer()
+    dmin_maxs = [0]
+    best_points = None
+    results = []
+
+    with ProcessPoolExecutor() as executor:
+        futures = {executor.submit(run, numbers, given_colors, target_space, metric_space, quality, seed=i): i for i in range(num_runs)}
+        for future in as_completed(futures):
+            i = futures[future]
+            try:
+                hex_colors, dmin_max, points, times, dmin_list, dt_list = future.result()
+                print(f"Run {i + 1}/{num_runs} completed with ΔE_max: {dmin_max:.2f}")
+                if dmin_max > np.max(dmin_maxs):
+                    best_points = points
+                dmin_maxs.append(dmin_max)
+                results.append((points, times, dmin_list, dt_list))
+            except Exception as e:
+                print(f"Run {i + 1}/{num_runs} failed with error: {e}")
+
+    t3 = timer()
+    print(f"Total time: {(t3 - t0) * 1000:.2f} ms")
+    print(f"Best ΔE_max: {np.max(dmin_maxs):.2f}")
+
+    # 可视化结果
+    if best_points is not None:
+        plot_points(best_points, np.arange(len(dmin_maxs)), dmin_maxs, "Runs", r"Maximum $\Delta E$", source_space=target_space,
+                    target_space=metric_space)
+
+    hex_colors = colour.notation.RGB_to_HEX(np.clip(best_points, 0, 1))  # 转换为HEX格式
+
+    print(f"First 20 generated points in HEX format:\n{hex_colors[:20]}\n")
+
+    return hex_colors, np.max(dmin_maxs)
+
+
+def plot_points(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_space='CIE xyY'):
     colour.set_domain_range_scale("1")
     a = np.array(a)
-
-    # 根据颜色空间设置标签
-    labels_dict = {
-        'CIE XYZ': ["X", "Y", "Z"],
-        'CIE xyY': ["x", "y", "Y"],
-        'CIE Lab': ["L*", "a*", "b*"],
-        'CIE Luv': ["L*", "u*", "v*"],
-        'CIE 1976 UCS': ["u'", "v'", "L"],
-        'CIE UCS': ["U", "V", "W"],
-        'CIE 1960 UCS': ["u", "v", "V"],
-        'CIE UVW': ["U*", "V*", "W*"],
-        'Hunter Lab': ["L", "a", "b"],
-        'Hunter Rdab': ["Rd", "a", "b"],
-        'DIN99': ["L_{99}", "a_{99}", "b_{99}"],
-        'ICaCb': ["I", "C_A", "C_Bb"],
-        'IgPgTg': ["I_G", "P_G", "T_G"],
-        'IPT': ["I", "P", "T"],
-        'IPT Ragoo 2021': ["I", "P", "T"],
-        'hdr-CIELAB': ["L_{hdr}", "a_{hdr}", "b_{hdr}"],
-        'hdr-IPT': ["I_{hdr}", "P_{hdr}", "T_{hdr}"],
-        'Oklab': ["L", "a", "b"],
-        'OSA UCS': ["L", "j", "g"],
-        'ProLab': ["L", "a", "b"],
-        'Yrg': ["Y", "r", "g"],
-        'Jzazaz': ["J_z", "a_z", "b_z"],
-        'Izazbz': ["I_z", "a_z", "b_z"],
-        'YCbCr': ["Y'", "Cb", "Cr"],
-        'YcCbcCrc': ["Y'", "Cbc'", "Crc'"],
-        'YCoCg': ["Y", "Co", "Cg"],
-        'ICtCp': ["I", "C_T", "C_P"],
-        'HSV': ["Hue", "Saturation", "Value"],
-        'HSL': ["Hue", "Saturation", "Lightness"],
-        'HCL': ["Hue", "Chroma", "Lightness"],
-        'CMY': ["Cyan", "Magenta", "Yellow"],
-        'IHLS': ["H", "Y", "S"],
-    }
 
     if target_space in RGB_SPACES:
         labels = ['Red', 'Green', 'Blue']
@@ -385,7 +491,7 @@ def plot_points(a, t, y, ylabel="Y", source_space='sRGB', target_space='CIE xyY'
         labels = ['J', 'a', 'b']
         target_space = target_space.replace('-', '')
     else:
-        labels = labels_dict.get(target_space, ["unknown x", "unknown y", "unknown z"])
+        labels = LABEL_DICT.get(target_space, ["unknown x", "unknown y", "unknown z"])
 
     colors = auto_convert(a, source_space, target_space)
     if target_space in RGB_SPACES:
@@ -415,9 +521,9 @@ def plot_points(a, t, y, ylabel="Y", source_space='sRGB', target_space='CIE xyY'
     ax.set_box_aspect((1, 1, 1))
 
     ax_2 = fig.add_subplot(1, 2, 2)
-    ax_2.semilogx(t, y, label=ylabel, color='tab:blue')
-    ax_2.set_title(ylabel + " vs Time")
-    ax_2.set_xlabel('Time')
+    ax_2.semilogx(x, y, label=ylabel, color='tab:blue')
+    ax_2.set_title(ylabel + " vs " + xlabel)
+    ax_2.set_xlabel(xlabel)
     ax_2.set_ylabel(ylabel)
     ax_2.legend()
 
@@ -425,66 +531,9 @@ def plot_points(a, t, y, ylabel="Y", source_space='sRGB', target_space='CIE xyY'
     plt.show()
 
 
-def main(numbers, given_colors=None, target_space='sRGB', metric_space='CAM16-UCS', quality="medium"):
-    # Deal with default colors list
-    if given_colors is None:
-        given_colors = np.array([[1, 1, 1]])
-    if len(np.shape(np.array(given_colors))) == 1:
-        given_colors = np.array([given_colors])
-
-    # Parameters dict for simulation
-    quality_parameters = {
-        'low': {
-            'dt': 0.001,
-            't_end': 500,
-            'steps': 20000,
-            't_tol': 0.0005,
-            'skip': 3,
-            'damping': 0.95
-        },
-        'medium': {
-            'dt': 0.0001,
-            't_end': 1000,
-            'steps': 100000,
-            't_tol': 0.0002,
-            'skip': 5,
-            'damping': 0.99
-        },
-        'high': {
-            'dt': 0.0001,
-            't_end': 2000,
-            'steps': 300000,
-            't_tol': 0.00005,
-            'skip': 10,
-            'damping': 0.998
-        }
-    }
-
-    kwargs = quality_parameters.get(quality, quality_parameters['medium'])
-
-    # Execute the simulation
-    t0 = timer()
-    times, dmin_list, points, dt_list = maximize_delta_e(
-        numbers, given_colors, target_space, metric_space,
-        seed=42,
-        **kwargs
-    )
-    t1 = timer()
-    print(f"Simulation time: {(t1 - t0)*1000:.2f} ms")
-
-    # 可视化结果
-    plot_points(points, times, dmin_list, r"Minimum $\Delta E$", source_space=target_space, target_space=metric_space)
-
-    hex_colors = colour.notation.RGB_to_HEX(np.clip(points, 0, 1))  # 转换为HEX格式
-
-    print(f"First 20 generated points in HEX format:\n{hex_colors[:20]}\n")
-    print(f"Best ΔE_min: {dmin_list.max():.2f}")
-
-    return hex_colors, dmin_list[-1]
-
-
 if __name__ == '__main__':
-    main(2, quality='high')
+    # single_run(3, quality='low')
+    multi_run(3, quality='medium', num_runs=16)
 
     # import csv
     #
