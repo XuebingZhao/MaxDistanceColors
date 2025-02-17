@@ -108,7 +108,7 @@ SIM_PARAMS = {
         't_end': 2000,
         'steps': 300000,
         't_tol': 0.00005,
-        'skip': 5,
+        'skip': 1,
         'damping': 0.998
     }
 }
@@ -334,7 +334,7 @@ def maximize_delta_e(
     # Deal with given initial points
     if p0 is None:
         p0 = [[]]
-    p0 = auto_convert(np.array(p0), source=source, target=uniform)
+    p0 = auto_convert(np.array(p0), source, uniform)
     num_fixed = len(p0)
 
     # Initialize the positions and velocities of the colors points.
@@ -394,13 +394,13 @@ def maximize_delta_e(
     best_pos = best_pos[np.argsort(dists)]
 
     # Convert the colors back to the source space
-    colors = auto_convert(best_pos, source=uniform, target=source)
+    colors = auto_convert(best_pos, uniform, source)
     # print(f"Max and Min values: {np.max(colors)}, {np.min(colors)}")
 
     return np.array(all_time), np.array(d_mins) * 100, np.array(colors), np.array(all_step)
 
 
-def run(numbers, given_colors, target_space, metric_space, quality, seed=None):
+def run(numbers, given_colors, color_space, metric_space, quality, seed=None):
     # Deal with default colors list
     if given_colors is None:
         given_colors = np.array([[1, 1, 1]])
@@ -410,35 +410,39 @@ def run(numbers, given_colors, target_space, metric_space, quality, seed=None):
     kwargs = SIM_PARAMS.get(quality, SIM_PARAMS['medium'])
 
     # Execute the simulation
-    t0 = timer()
-    times, dmin_list, points, dt_list = maximize_delta_e(
-        numbers, given_colors, target_space, metric_space,
+    times, dmin_list, points, _ = maximize_delta_e(
+        numbers, given_colors, color_space, metric_space,
         seed=seed,
         **kwargs
     )
-    t1 = timer()
-    # print(f"Simulation time: {(t1 - t0) * 1000:.2f} ms")
 
-    hex_colors = colour.notation.RGB_to_HEX(np.clip(points, 0, 1))  # 转换为HEX格式
+    # Convert the points to HEX format
+    spoints = points
+    if color_space == "CMY":    # 如果为CMY空间，则需要转换为sRGB空间
+        spoints = auto_convert(spoints, color_space, "sRGB")
+    hex_colors = colour.notation.RGB_to_HEX(np.clip(spoints, 0, 1))  # 转换为HEX格式
 
-    return hex_colors, dmin_list.max(), points, times, dmin_list, dt_list
+    return hex_colors, dmin_list.max(), points, times, dmin_list
 
 
-def single_run(numbers, given_colors=None, target_space='sRGB', metric_space='CAM16-UCS', quality="medium"):
-    hex_colors, dmin_max, points, times, dmin_list, dt_list = run(
-        numbers, given_colors, target_space, metric_space, quality
+def single_run(numbers, given_colors=None, color_space='sRGB', metric_space='CAM16-UCS', quality="medium"):
+    t0 = timer()
+    hex_colors, dmin_max, points, times, dmin_list = run(
+        numbers, given_colors, color_space, metric_space, quality
     )
+    t1 = timer()
+    print(f"Total time: {(t1 - t0) * 1000:.2f} ms")
+    print(f"Best ΔE_min: {dmin_max:.2f}")
 
     # 可视化结果
-    plot_points(points, times, dmin_list, "Time", r"Minimum $\Delta E$", source_space=target_space, target_space=metric_space)
+    plot_points(points, times, dmin_list, "Time", r"Minimum $\Delta E$", color_space, metric_space)
 
     print(f"First 20 generated points in HEX format:\n{hex_colors[:20]}\n")
-    print(f"Best ΔE_min: {dmin_max:.2f}")
 
     return hex_colors, dmin_max
 
 
-def multi_run(numbers, given_colors=None, target_space='sRGB', metric_space='CAM16-UCS', quality="low", num_runs=20):
+def multi_run(numbers, given_colors=None, color_space='sRGB', metric_space='CAM16-UCS', quality="low", num_runs=20):
     # Deal with default colors list
     if given_colors is None:
         given_colors = np.array([[1, 1, 1]])
@@ -449,36 +453,34 @@ def multi_run(numbers, given_colors=None, target_space='sRGB', metric_space='CAM
     t0 = timer()
     dmin_maxs = [0]
     best_points = None
-    results = []
+    best_hexs = None
+    best_dmin = None
 
-    with ProcessPoolExecutor() as executor:
-        futures = {executor.submit(run, numbers, given_colors, target_space, metric_space, quality, seed=i): i for i in range(num_runs)}
+    with ProcessPoolExecutor(max_workers=16) as executor:
+        futures = {executor.submit(run, numbers, given_colors, color_space, metric_space, quality, seed=i): i for i in range(num_runs)}
         for future in as_completed(futures):
             i = futures[future]
-            try:
-                hex_colors, dmin_max, points, times, dmin_list, dt_list = future.result()
-                print(f"Run {i + 1}/{num_runs} completed with ΔE_max: {dmin_max:.2f}")
-                if dmin_max > np.max(dmin_maxs):
-                    best_points = points
-                dmin_maxs.append(dmin_max)
-                results.append((points, times, dmin_list, dt_list))
-            except Exception as e:
-                print(f"Run {i + 1}/{num_runs} failed with error: {e}")
+            hex_colors, dmin_max, points, _, _ = future.result()
+            print(f"Run {i + 1}/{num_runs} completed with ΔE_max: {dmin_max:.2f}")
+            if dmin_max > np.max(dmin_maxs):
+                best_points = points
+                best_hexs = hex_colors
+                best_dmin = dmin_max
 
-    t3 = timer()
-    print(f"Total time: {(t3 - t0) * 1000:.2f} ms")
+            dmin_maxs.append(dmin_max)
+
+    t1 = timer()
+    print(f"Total time: {(t1 - t0) * 1000:.2f} ms")
     print(f"Best ΔE_max: {np.max(dmin_maxs):.2f}")
 
     # 可视化结果
     if best_points is not None:
-        plot_points(best_points, np.arange(len(dmin_maxs)), dmin_maxs, "Runs", r"Maximum $\Delta E$", source_space=target_space,
-                    target_space=metric_space)
+        plot_points(best_points, np.arange(len(dmin_maxs)), dmin_maxs, "Runs", r"Maximum $\Delta E$", color_space,
+                    metric_space)
 
-    hex_colors = colour.notation.RGB_to_HEX(np.clip(best_points, 0, 1))  # 转换为HEX格式
+    print(f"First 20 generated points in HEX format:\n{best_hexs[:20]}\n")
 
-    print(f"First 20 generated points in HEX format:\n{hex_colors[:20]}\n")
-
-    return hex_colors, np.max(dmin_maxs)
+    return best_hexs, best_dmin
 
 
 def plot_points(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_space='CIE xyY'):
@@ -521,7 +523,10 @@ def plot_points(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_spa
     ax.set_box_aspect((1, 1, 1))
 
     ax_2 = fig.add_subplot(1, 2, 2)
-    ax_2.semilogx(x, y, label=ylabel, color='tab:blue')
+    if len(x) > 100:
+        ax_2.semilogx(x, y, label=ylabel, color='tab:blue')
+    else:
+        ax_2.plot(x, y, label=ylabel, color='tab:blue')
     ax_2.set_title(ylabel + " vs " + xlabel)
     ax_2.set_xlabel(xlabel)
     ax_2.set_ylabel(ylabel)
@@ -532,14 +537,14 @@ def plot_points(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_spa
 
 
 if __name__ == '__main__':
-    # single_run(3, quality='low')
-    multi_run(3, quality='medium', num_runs=16)
+    single_run(300, quality='low')
+    # multi_run(3, quality='medium', num_runs=8)
 
     # import csv
     #
     # result = [[0, 0, [None]]]
     # for n in np.arange(256, 257, 1):
-    #     hexs, de = main(n)
+    #     hexs, de = multi_run(n, quality='low', num_runs=32)
     #     result.append([n, de, hexs])
     #
     #     csv_file = "result3.csv"
