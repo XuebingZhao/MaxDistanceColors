@@ -2,12 +2,18 @@
 # By simulating the color points repelling each other, to maximize the delta E between them.
 
 from time import perf_counter as timer
+from PIL import Image, ImageCms
 
 import numpy as np
 from scipy.spatial import cKDTree, Delaunay
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import colour
+
+# Set ICC profile paths
+CMYK_ICC = r'C:\Windows\System32\spool\drivers\color\JapanColor2001Coated.icc'
+REC2020_ICC = r'.\Rec2020.icm'
 
 colour.set_domain_range_scale("1")
 RGB_SPACES = [
@@ -114,6 +120,69 @@ SIM_PARAMS = {
 }
 
 
+def cmyk_to_rgb(cmyk_colors, cmyk_profile, rgb_profile):
+    """
+    Convert CMYK colors to RGB using ICC profiles.
+
+    :param cmyk_colors: List of CMYK colors to convert, where each color is a list of four integers [C, M, Y, K],
+                        or a single color list.
+    :param cmyk_profile: Path to the ICC profile for the CMYK color space.
+    :param rgb_profile: Path to the ICC profile for the target RGB color space.
+    :return: List of converted RGB colors, where each color is a list [R, G, B] with values in the range 0.0-1.0.
+    """
+    transform = ImageCms.buildTransformFromOpenProfiles(
+        ImageCms.getOpenProfile(cmyk_profile),
+        ImageCms.getOpenProfile(rgb_profile),
+        inMode='CMYK', outMode='RGB',
+        renderingIntent=ImageCms.Intent.ABSOLUTE_COLORIMETRIC
+    )
+
+    # Ensure input is a 2D array and scale to 0-255
+    cmyk_array = (np.atleast_2d(cmyk_colors) * 255.0).astype(np.uint8).reshape(-1, 1, 4)
+    cmyk_image = Image.fromarray(cmyk_array, 'CMYK')
+
+    rgb_image = ImageCms.applyTransform(cmyk_image, transform)
+    rgb_colors = np.array(rgb_image).reshape(-1, 3)
+
+    # If input is a single color, return a 1D array
+    if len(cmyk_colors) == 1 and isinstance(cmyk_colors[0], (int, float)):
+        rgb_colors = rgb_colors.reshape(-1)
+
+    # Scale RGB values to 0.0-1.0
+    return rgb_colors / 255.0
+
+
+def rgb_to_cmyk(rgb_colors, rgb_profile, cmyk_profile):
+    """
+    Convert RGB colors to CMYK using ICC profiles.
+
+    :param rgb_colors: List of RGB colors to convert, where each color is a list of three floats [R, G, B],
+                       or a single color list with values in the range 0.0-1.0.
+    :param rgb_profile: Path to the ICC profile for the RGB color space.
+    :param cmyk_profile: Path to the ICC profile for the target CMYK color space.
+    :return: List of converted CMYK colors, where each color is a list [C, M, Y, K] with values in the range 0.0-1.0.
+    """
+    transform = ImageCms.buildTransformFromOpenProfiles(
+        ImageCms.getOpenProfile(rgb_profile),
+        ImageCms.getOpenProfile(cmyk_profile),
+        inMode='RGB', outMode='CMYK',
+        renderingIntent=ImageCms.Intent.ABSOLUTE_COLORIMETRIC
+    )
+
+    # Ensure input is a 2D array and scale to 0-255
+    rgb_array = (np.atleast_2d(rgb_colors) * 255.0).astype(np.uint8).reshape(-1, 1, 3)
+    rgb_image = Image.fromarray(rgb_array, 'RGB')
+
+    cmyk_image = ImageCms.applyTransform(rgb_image, transform)
+    cmyk_colors = np.array(cmyk_image).reshape(-1, 4) / 255.0
+
+    # If input is a single color, return a 1D array
+    if len(rgb_colors) == 1 and isinstance(rgb_colors[0], (int, float)):
+        cmyk_colors = cmyk_colors.reshape(-1)
+
+    return cmyk_colors
+
+
 def auto_convert(a, source='sRGB', target='CIE XYZ'):
     """
     Automatic color space conversion.
@@ -124,6 +193,24 @@ def auto_convert(a, source='sRGB', target='CIE XYZ'):
     """
     if source == target:
         return a
+
+    if source in ['CMYK', 'CMY']:
+        original_shape = a.shape if isinstance(a, np.ndarray) else np.array(a).shape
+        is_1d = len(original_shape) == 1
+
+        a = np.atleast_2d(a)
+        if a.shape[1] == 3:
+            a = np.column_stack((a, np.zeros((a.shape[0], 1))))
+        elif a.shape == (3, 1):
+            a = np.vstack((a, [0]))
+        rgb = cmyk_to_rgb(a, CMYK_ICC, REC2020_ICC)
+        if is_1d:
+            rgb = rgb.flatten()
+        return auto_convert(rgb, 'ITU-R BT.2020', target)
+
+    if target in ['CMYK', 'CMY']:
+        rgb = auto_convert(a, source, 'ITU-R BT.2020')
+        return rgb_to_cmyk(rgb, REC2020_ICC, CMYK_ICC)
 
     # Remove CAM space's extra '-'
     if source in CAM_SPACES:
@@ -191,7 +278,16 @@ def get_boundary_hull(res=9, boundary='sRGB', workspace='CAM16-UCS'):
     """
     x = np.linspace(0, 1, res)
     p = np.array(np.meshgrid(x, x, x)).reshape(3, -1).T
-    table = auto_convert(p, boundary, workspace)
+
+    # Filter out points on the boundary
+    boundary_mask = (
+        (p[:, 0] == 0) | (p[:, 0] == 1) |
+        (p[:, 1] == 0) | (p[:, 1] == 1) |
+        (p[:, 2] == 0) | (p[:, 2] == 1)
+    )
+    sp = p[boundary_mask]
+
+    table = auto_convert(sp, boundary, workspace)
     hull = Delaunay(table)
     return hull
 
@@ -338,7 +434,7 @@ def maximize_delta_e(
     num_fixed = len(p0)
 
     # Initialize the positions and velocities of the colors points.
-    pos = init(num, in_bounds, seed=seed, **kwarg)
+    pos = init(num-p0.shape[0], in_bounds, seed=seed, **kwarg)
     if p0.shape[0] > 0:
         pos = np.vstack([p0, pos])
     vel = np.zeros_like(pos, dtype=np.float32)
@@ -394,6 +490,9 @@ def maximize_delta_e(
     best_pos = best_pos[np.argsort(dists)]
 
     # Convert the colors back to the source space
+    # For CMY space, convert back to sRGB
+    # if source in ['CMY', 'CMYK']:
+    #     source = 'sRGB'
     colors = auto_convert(best_pos, uniform, source)
     # print(f"Max and Min values: {np.max(colors)}, {np.min(colors)}")
 
@@ -418,9 +517,9 @@ def run(numbers, given_colors, color_space, metric_space, quality, seed=None):
 
     # Convert the points to HEX format
     spoints = points
-    if color_space == "CMY":    # 如果为CMY空间，则需要转换为sRGB空间
+    if color_space in ["CMYK", "CMY"]:    # For CMYK, convert to sRGB first to generate HEX
         spoints = auto_convert(spoints, color_space, "sRGB")
-    hex_colors = colour.notation.RGB_to_HEX(np.clip(spoints, 0, 1))  # 转换为HEX格式
+    hex_colors = colour.notation.RGB_to_HEX(np.clip(spoints, 0, 1))
 
     return hex_colors, dmin_list.max(), points, times, dmin_list
 
@@ -436,6 +535,7 @@ def single_run(numbers, given_colors=None, color_space='sRGB', metric_space='CAM
 
     # 可视化结果
     plot_points(points, times, dmin_list, "Time", r"Minimum $\Delta E$", color_space, metric_space)
+    plot_color_palette(hex_colors)
 
     print(f"First 20 generated points in HEX format:\n{hex_colors[:20]}\n")
 
@@ -536,9 +636,47 @@ def plot_points(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_spa
     plt.show()
 
 
+def plot_color_palette(hex_colors):
+    """
+    将颜色调色板可视化为带有 HEX 值的色块。
+
+    :param hex_colors: HEX 颜色代码的列表。
+    """
+    n_colors = len(hex_colors)
+
+    # 计算合适的行数和列数
+    cols = int(n_colors ** 0.5) * 1
+    rows = (n_colors + cols - 1) // cols  # 向上取整
+
+    fig, ax = plt.subplots(figsize=(max(min(cols * 1.5, 15),8), max(rows * 0.5, 6)))  # 根据颜色数量调整图形大小
+    ax.set_xlim(0, cols)
+    ax.set_ylim(0, rows)
+    ax.axis('off')
+    block_width = 1
+    block_height = 1
+    text_y_pos = 0.5  # HEX 文本的垂直位置
+
+    for i, hex_color in enumerate(hex_colors):
+        col = i % cols
+        row = i // cols
+        color_block = Rectangle((col, row), block_width, block_height, color=hex_color)
+        ax.add_patch(color_block)
+
+        # 计算背景颜色的亮度，以决定文本颜色
+        r, g, b = colour.notation.HEX_to_RGB(hex_color)
+        brightness = (0.299 * r + 0.587 * g + 0.114 * b)
+        text_color = 'black' if brightness > 0.5 else 'white'
+
+        ax.text(col + block_width / 2, row + text_y_pos, hex_color, ha='center', va='center', color=text_color)
+
+    plt.title("Color Palette", pad=20)  # 添加标题
+    plt.tight_layout(pad=2)  # 调整布局
+    plt.show()
+
+
 if __name__ == '__main__':
-    single_run(300, quality='low')
-    # multi_run(3, quality='medium', num_runs=8)
+    single_run(6, [0, 0, 0, 0], color_space='CMY', quality='low')
+    # multi_run(3, [1, 1, 1], quality='medium', num_runs=8)
 
     # import csv
     #
