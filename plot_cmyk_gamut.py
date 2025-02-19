@@ -9,7 +9,7 @@ from VizPalette import auto_convert
 
 # ICC 配置文件路径（请根据实际情况修改）
 cmyk_profile_path = r'.\JapanColor2001Coated.icc'
-rgb_profile_path = r'C:\Windows\System32\spool\drivers\color\Rec2020.icm'
+rgb_profile_path = r'.\Rec2020.icm'
 cmyk_profile_name = os.path.splitext(os.path.basename(cmyk_profile_path))[0].split(' ')[0]
 rgb_profile_name = os.path.splitext(os.path.basename(rgb_profile_path))[0].split(' ')[0]
 
@@ -28,7 +28,8 @@ def cmyk_to_rgb(cmyk_colors, cmyk_profile, rgb_profile):
         ImageCms.getOpenProfile(cmyk_profile),
         ImageCms.getOpenProfile(rgb_profile),
         inMode='CMYK', outMode='RGB',
-        renderingIntent=ImageCms.Intent.ABSOLUTE_COLORIMETRIC
+        renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
+        flags=ImageCms.Flags.BLACKPOINTCOMPENSATION
     )
 
     cmyk_array = ((np.atleast_2d(cmyk_colors)*255.0)
@@ -59,7 +60,8 @@ def rgb_to_cmyk(rgb_colors, rgb_profile, cmyk_profile):
         ImageCms.getOpenProfile(rgb_profile),
         ImageCms.getOpenProfile(cmyk_profile),
         inMode='RGB', outMode='CMYK',
-        renderingIntent=ImageCms.Intent.ABSOLUTE_COLORIMETRIC
+        renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
+        flags=ImageCms.Flags.BLACKPOINTCOMPENSATION
     )
 
     rgb_array = ((np.atleast_2d(rgb_colors)*255.0)
@@ -76,7 +78,6 @@ def rgb_to_cmyk(rgb_colors, rgb_profile, cmyk_profile):
     return cmyk_colors
 
 
-
 def rgb_to_xy(rgb):
     """
     利用 colour.convert 将 sRGB 色彩（0-255 范围）转换到 xyY 空间，
@@ -90,6 +91,7 @@ def rgb_to_xy(rgb):
     # 直接使用 colour.convert 完成从 sRGB 到 xyY 的转换
     xyY = auto_convert(rgb_normalized, 'ITU-R BT.2020', 'CIE xyY')
     return xyY[:, :2]
+
 
 def rgb_to_uv(rgb):
     """
@@ -182,4 +184,4 @@ if __name__ == "__main__":
     print(f"{rgb_profile_name}转{cmyk_profile_name}：", rgb_to_cmyk(single_rgb, rgb_profile_path, cmyk_profile_path))
 
     # 绘制沿立方体边界采样的 CMYK gamut 边界
-    plot_cmyk_gamut_edges(cmyk_profile_path, rgb_profile_path, resolution=255)
+    plot_cmyk_gamut_edges(cmyk_profile_path, rgb_profile_path, resolution=11)
