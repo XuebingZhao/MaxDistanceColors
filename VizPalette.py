@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import colour
+import alphashape
 
 from utils import profile
 
@@ -21,7 +22,9 @@ CMYK_PARAMS = {
     # 'renderingIntent': ImageCms.Intent.RELATIVE_COLORIMETRIC,
     # 'renderingIntent': ImageCms.Intent.ABSOLUTE_COLORIMETRIC,
     # 'flags': ImageCms.Flags.BLACKPOINTCOMPENSATION,
-    # 'intermediate_space': 'ITU-R BT.2020'
+    # 'intermediate_space': 'ITU-R BT.2020',
+    'output_cmyk': True,    # Else output RGB, which might oversaturated.
+    # 'hull_type': 'concave',     # 'concave', 'convex'. Trimesh for concave hull, very slow.
 }
 CMYK_PARAMS.setdefault('intermediate_space', 'sRGB')
 if CMYK_PARAMS['intermediate_space'] == 'ITU-R BT.2020':
@@ -30,6 +33,8 @@ else:
     CMYK_PARAMS['rgb_icc'] = CMYK_PARAMS['srgb_icc']
 CMYK_PARAMS.setdefault('renderingIntent', ImageCms.Intent.PERCEPTUAL)
 CMYK_PARAMS.setdefault('flags', ImageCms.Flags.NONE)
+CMYK_PARAMS.setdefault('output_cmyk', False)
+CMYK_PARAMS.setdefault('hull_type', 'convex')
 
 # Set colourspace
 colour.set_domain_range_scale("1")
@@ -41,21 +46,7 @@ CAM_SPACES = [
 UCS_SPACES = [
     'CIE Lab', 'DIN99', 'DIN99b', 'DIN99c', 'DIN99d', 'ICaCb', 'Oklab', 'OSA UCS', 'Jzazaz', 'ICtCp', *CAM_SPACES[-6:]
 ]
-DE_SPACES_MAP = {
-    'CIE 1976': 'CIE Lab',
-    'CIE 1994': 'CIE Lab',
-    'CIE 2000': 'CIE Lab',
-    'CMC': 'CIE Lab',
-    'DIN99': 'CIE Lab',
-    'ITP': 'ICtCp',
-    'CAM02-LCD': 'CAM02LCD',
-    'CAM02-SCD': 'CAM02SCD',
-    'CAM02-UCS': 'CAM02UCS',
-    'CAM16-LCD': 'CAM16LCD',
-    'CAM16-SCD': 'CAM16SCD',
-    'CAM16-UCS': 'CAM16UCS'
-}
-# 根据颜色空间设置标签
+# Set labels based on color space
 LABEL_DICT = {
     'CIE XYZ': ["X", "Y", "Z"],
     'CIE xyY': ["x", "y", "Y"],
@@ -187,7 +178,7 @@ def rgb_to_cmyk(rgb_colors, rgb_profile, cmyk_profile):
 
     return cmyk_colors
 
-# @profile
+
 def auto_convert(a, source='sRGB', target='CIE XYZ'):
     """
     Automatic color space conversion.
@@ -246,41 +237,8 @@ def auto_convert(a, source='sRGB', target='CIE XYZ'):
         XYZ = auto_convert(a, source, 'CIE XYZ')
         return colour.XYZ_to_DIN99(XYZ, method=target)
 
-
     # Convert between non-RGB spaces
     return colour.convert(a, source, target)
-
-
-def deltaE(color_a, color_b, color_space='sRGB', metric='CIE 2000'):
-    """
-    Given two colors in a given color space, calculate the deltaE value using the specified uniform.
-    :param color_a: Input color a.
-    :param color_b: Input color b.
-    :param color_space: Color space of the input colors.
-    :param metric: In which uniform to calculate the deltaE value. Supported values:
-     'CIE 1976', 'CIE 1994', 'CIE 2000', 'CMC', 'DIN99', 'ITP',
-     'CAM02-LCD', 'CAM02-SCD', 'CAM02-UCS', 'CAM16-LCD', 'CAM16-SCD', 'CAM16-UCS'.
-    :return: DeltaE value.
-    """
-    if metric in ['CIE 1976', 'CIE 1994', 'CIE 2000', 'CMC', 'DIN99']:
-        method_space = 'CIE Lab'
-    elif metric in ['ITP']:
-        method_space = 'ICtCp'
-    elif metric in ['CAM02-LCD', 'CAM02-SCD', 'CAM02-UCS', 'CAM16-LCD', 'CAM16-SCD', 'CAM16-UCS']:
-        method_space = metric.replace('-', '')
-    else:
-        raise ValueError(f"Unsupported deltaE uniform: {metric}")
-
-    if color_space != method_space:
-        color_a = auto_convert(color_a, color_space, method_space)
-        color_b = auto_convert(color_b, color_space, method_space)
-
-    delta_e = colour.delta_E(color_a, color_b, method=metric)
-
-    if method_space not in ['CIE Lab', 'ICtCp']:
-        delta_e *= 100
-
-    return delta_e
 
 
 def remove_duplicate_points(table, threshold=0.0001):
@@ -290,7 +248,7 @@ def remove_duplicate_points(table, threshold=0.0001):
     # 构建KD树以高效查询邻近点
     tree = cKDTree(table)
     # 查询每个点在阈值内的所有邻近点（包括自身）
-    neighbors_list = tree.query_ball_tree(tree, r=threshold)
+    neighbors_list = tree.query_ball_tree(tree, r=threshold, p=2)
 
     n = table.shape[0]
     keep_mask = np.ones(n, dtype=bool)  # 初始标记所有点为保留
@@ -307,50 +265,56 @@ def remove_duplicate_points(table, threshold=0.0001):
     return table[keep_mask]
 
 
-def get_boundary_hull(res=15, boundary='sRGB', workspace='CAM16-UCS'):
+def get_boundary_hull(res=9, boundary='sRGB', workspace='CAM16UCS', hull_type='convex'):
     """
     Generate a Delaunay triangulation of the boundary of the given color space in the given workspace.
     :param res: Grid resolution of each dimension.
     :param boundary: Color space to generate the boundary.
     :param workspace: Color space to project the boundary into.
     :return: Delaunay triangulation of the boundary.
+    :param hull_type: "convex" or "concave", if "concave", use alphashape to generate trimesh
     """
-    if boundary in ['CMYK', 'CMY']:
-        n_dim = 4
-    else:
-        n_dim = 3
     x = np.linspace(0, 1, res)
-    p = np.array(np.meshgrid(*[x]*n_dim)).reshape(n_dim, -1).T
+    if boundary in ['CMYK', 'CMY']:
+        k = np.linspace(0, 1, 5)
+        p = np.array(np.meshgrid(*[x] * 3, k)).reshape(4, -1).T
+    else:
+        p = np.array(np.meshgrid(*[x] * 3)).reshape(3, -1).T
 
     # Filter out points on the boundary
     boundary_mask = np.any((p == 0) | (p == 1), axis=1)
     sp = p[boundary_mask]
 
     table = auto_convert(sp, boundary, workspace)
-    # table = remove_duplicate_points(table, threshold=0.0001)
-    validate_result(table, workspace, workspace)
+    table = remove_duplicate_points(table, threshold=0.001)
+    # validate_result(table, workspace, workspace)
     if boundary in ['CMYK', 'CMY']:
         table = auto_convert(auto_convert(table, workspace, boundary), boundary, workspace)
-        validate_result(table, workspace, workspace)
-
-    hull = Delaunay(table)
+        # validate_result(table, workspace, workspace)
+    hull_type = CMYK_PARAMS['hull_type']
+    if hull_type != 'convex':
+        hull = alphashape.alphashape(table, alpha=res / 4)
+    else:
+        hull = Delaunay(table)
     return hull
 
 
-def in_bounds(p, boundary='sRGB', workspace='CAM16-UCS', hull=None):
+def in_bounds(p, boundary='sRGB', workspace='CAM16UCS', hull=None):
     """
     Determine whether a point is within the boundary of the given color space in the given workspace.
     :param p: Coordinate of the given point.
     :param boundary: Given color space.
     :param workspace: Working color space.
-    :param hull: [Optional] Delaunay triangulation of the boundary. If not provided, use converted colors to determine.
+    :param hull: [Optional] Trimesh or Delaunay of the boundary. If not provided, use converted colors to determine.
     :return: Boolean indicating whether the point is within the boundary.
     """
     if hull is None:
         s = auto_convert(p, workspace, boundary)
         valid = np.all((s >= 0) & (s <= 1), axis=-1)
-    else:
+    elif isinstance(hull, Delaunay):
         valid = hull.find_simplex(p) >= 0
+    else:
+        valid = hull.contains(p)
 
     return valid
 
@@ -415,7 +379,6 @@ def update_positions(s, v, a, dt, damping=0.99):
     return s, v
 
 
-# @profile
 def deal_out_of_bounds(s, v, dt, **kwargs):
     """
     Deal with particles that are out of bounds.
@@ -445,7 +408,7 @@ def deal_out_of_bounds(s, v, dt, **kwargs):
 
 
 def maximize_delta_e(
-        num, p0=None, source='sRGB', uniform='CAM16-UCS',
+        num, p0=None, source='sRGB', uniform='CAM16UCS',
         dt=1E-4, t_end=1000, t_tol=1E-4, steps=1000, skip=10, damping=0.99,
         seed=None):
     """
@@ -464,8 +427,9 @@ def maximize_delta_e(
     :param seed: Random seed.
     :return: Generated colors and their corresponding time and step values.
     """
-    if not uniform in UCS_SPACES:
-        raise ValueError(f"{uniform} is not a perceptually uniform space. Please use a uniform space in:\n {UCS_SPACES}")
+    if uniform not in UCS_SPACES:
+        raise ValueError(f"{uniform} is not a perceptually uniform space. "
+                         f"Please use a uniform space in:\n {UCS_SPACES}")
 
     # Transform input color space bounds to uniform bounds
     hull = get_boundary_hull(boundary=source, workspace=uniform)
@@ -481,7 +445,7 @@ def maximize_delta_e(
     num_fixed = len(p0)
 
     # Initialize the positions and velocities of the colors points.
-    pos = init(num-p0.shape[0], in_bounds, seed=seed, **kwarg)
+    pos = init(num - p0.shape[0], in_bounds, seed=seed, **kwarg)
     if p0.shape[0] > 0:
         pos = np.vstack([p0, pos])
     vel = np.zeros_like(pos, dtype=np.float32)
@@ -538,15 +502,15 @@ def maximize_delta_e(
 
     # Convert the colors back to the source space
     # For CMY space, convert back to sRGB
-    # if source in ['CMY', 'CMYK']:
-    #     source = 'sRGB'
+    if source in ['CMY', 'CMYK'] and not CMYK_PARAMS['output_cmyk']:
+        source = 'sRGB'
     colors = auto_convert(best_pos, uniform, source)
     # print(f"Max and Min values: {np.max(colors)}, {np.min(colors)}")
 
     return np.array(all_time), np.array(d_mins) * 100, np.array(colors), np.array(all_step)
 
 
-def validate_result(points, color_space, target_space):
+def validate_result(points, color_space, target_space, show=True):
     if target_space in RGB_SPACES:
         labels = ['Red', 'Green', 'Blue']
     elif target_space in CAM_SPACES:
@@ -560,52 +524,52 @@ def validate_result(points, color_space, target_space):
     dists, _ = tree.query(pos, k=2)
     de_min = np.min(dists[:, 1])
 
-    # Plot the points in 3D with distances as colors
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
+    if show:
+        # Plot the points in 3D with distances as colors
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
 
-    # Swap labels and coordinates if necessary
-    if labels[0][0] in ["L", "J", "I", "Y", ]:
-        labels = labels[1:] + labels[:1]
-        pos = np.hstack((pos[:, 1:], pos[:, :1]))
+        # Swap labels and coordinates if necessary
+        if labels[0][0] in ["L", "J", "I", "Y", ]:
+            labels = labels[1:] + labels[:1]
+            pos = np.hstack((pos[:, 1:], pos[:, :1]))
 
-    # Scatter plot
-    scatter = ax.scatter(pos[:, 0], pos[:, 1], pos[:, 2], c=dists[:, 1]*100, cmap='viridis', s=50, alpha=1)
+        # Scatter plot
+        scatter = ax.scatter(pos[:, 0], pos[:, 1], pos[:, 2], c=dists[:, 1] * 100, cmap='viridis', s=50, alpha=1)
 
-    # Add a color bar which maps values to colors
-    cbar = fig.colorbar(scatter, ax=ax, shrink=0.5, aspect=5)
-    cbar.set_label(r'$\Delta E$')
+        # Add a color bar which maps values to colors
+        cbar = fig.colorbar(scatter, ax=ax, shrink=0.5, aspect=5)
+        cbar.set_label(r'$\Delta E$')
 
-    # Set labels
-    ax.set_xlabel(f"${labels[0]}$")
-    ax.set_ylabel(f"${labels[1]}$")
-    ax.set_zlabel(f"${labels[2]}$")
-    ax.set_title(rf'$\Delta E_{{min}}={de_min*100:.2f}$')
-    x_lim = np.max(np.abs(pos[:, 0]))
-    y_lim = np.max(np.abs(pos[:, 1]))
-    xy_lim = max(x_lim, y_lim)
-    ax.set_xlim([-xy_lim, xy_lim])
-    ax.set_ylim([-xy_lim, xy_lim])
-    ax.set_zlim([0, 1])
-    ax.set_box_aspect((1, 1, 1))
+        # Set labels
+        ax.set_xlabel(f"${labels[0]}$")
+        ax.set_ylabel(f"${labels[1]}$")
+        ax.set_zlabel(f"${labels[2]}$")
+        ax.set_title(rf'$\Delta E_{{min}}={de_min * 100:.2f}$')
+        x_lim = np.max(np.abs(pos[:, 0]))
+        y_lim = np.max(np.abs(pos[:, 1]))
+        xy_lim = max(x_lim, y_lim)
+        ax.set_xlim([-xy_lim, xy_lim])
+        ax.set_ylim([-xy_lim, xy_lim])
+        ax.set_zlim([0, 1])
+        ax.set_box_aspect((1, 1, 1))
 
-    # Set the view angle to -z direction
-    ax.view_init(elev=90, azim=-90)
-    ax.set_proj_type('ortho')
+        # Set the view angle to -z direction
+        ax.view_init(elev=90, azim=-90)
+        ax.set_proj_type('ortho')
 
-    # Show plot
-    fig.tight_layout()
-    plt.show()
+        # Show plot
+        fig.tight_layout()
+        plt.show()
 
-    return de_min*100
+    return de_min * 100
 
 
-def run(numbers, given_colors, color_space, metric_space, quality, seed=None):
+def run(numbers, given_colors, color_space='sRGB', metric_space='CAM16UCS', quality='medium', seed=None):
     # Deal with default colors list
     if given_colors is None:
         given_colors = np.array([[1, 1, 1]])
-    if len(np.shape(np.array(given_colors))) == 1:
-        given_colors = np.array([given_colors])
+    given_colors = np.atleast_2d(given_colors)
 
     kwargs = SIM_PARAMS.get(quality, SIM_PARAMS['medium'])
 
@@ -618,70 +582,82 @@ def run(numbers, given_colors, color_space, metric_space, quality, seed=None):
 
     # Convert the points to HEX format
     spoints = points
-    if color_space in ["CMYK", "CMY"]:    # For CMYK, convert to sRGB first to generate HEX
+    if color_space in ["CMYK", "CMY"] and CMYK_PARAMS['output_cmyk']:    # For CMYK, convert to sRGB first to generate HEX
         spoints = auto_convert(spoints, color_space, "sRGB")
     hex_colors = colour.notation.RGB_to_HEX(np.clip(spoints, 0, 1))
 
     return hex_colors, dmin_list.max(), points, times, dmin_list
 
 
-def single_run(numbers, given_colors=None, color_space='sRGB', metric_space='CAM16-UCS', quality="medium"):
+def single_run(nums, given_colors=None, color_space='sRGB', metric_space='CAM16UCS', quality="medium"):
+    _color_space = color_space
+    if color_space in ["CMYK", "CMY"] and not CMYK_PARAMS['output_cmyk']:
+        _color_space = "sRGB"
     # Execute the simulation
     t0 = timer()
-    hex_colors, dmin_max, points, times, dmin_list = run(
-        numbers, given_colors, color_space, metric_space, quality
+    hex_colors, dmin, points, times, dmin_list = run(
+        nums, given_colors, color_space, metric_space, quality
     )
     t1 = timer()
     print(f"Total time: {(t1 - t0) * 1000:.2f} ms")
-    print(f"Best ΔE_min: {dmin_max:.2f}")
+    print(f"Best ΔE_min: {dmin:.2f}")
 
     # 可视化结果
-    plot_points(points, times, dmin_list, "Time", r"Minimum $\Delta E$", color_space, metric_space)
+    plot_points(points, times, dmin_list, "Time", r"Minimum $\Delta E$", _color_space, metric_space)
+    real_dmin = validate_result(points, _color_space, metric_space)
     plot_color_palette(hex_colors, points, color_space=color_space,
-                       title=rf"{numbers} colors in {color_space} with $\Delta E_{{min}}={dmin_max:.1f}$ in {metric_space}")
-    validate_result(points, color_space, metric_space)
+                       title=rf"{nums} {color_space} colors, $\Delta E_{{min}}={real_dmin:.1f}$ @ {metric_space}")
 
     print(f"First 20 generated points in HEX format:\n{hex_colors[:20]}\n")
 
-    return hex_colors, dmin_max
+    return hex_colors, real_dmin
 
 
-def multi_run(numbers, given_colors=None, color_space='sRGB', metric_space='CAM16-UCS', quality="low", num_runs=20):
+def multi_run(nums, given_colors=None, color_space='sRGB', metric_space='CAM16UCS', quality="low", num_runs=20):
+    _color_space = color_space
+    if color_space in ["CMYK", "CMY"] and not CMYK_PARAMS['output_cmyk']:
+        _color_space = "sRGB"
+
     # Execute the simulation
     t0 = timer()
-    dmin_maxs = [0]
+    dmins = [0]
     best_points = None
     best_hexs = None
     best_dmin = None
 
     with ProcessPoolExecutor(max_workers=2) as executor:
-        futures = {executor.submit(run, numbers, given_colors, color_space, metric_space, quality, seed=i): i for i in range(num_runs)}
+        futures = {
+            executor.submit(
+                run, nums, given_colors, color_space, metric_space, quality, seed=i
+            ): i for i in range(num_runs)
+        }
         for future in as_completed(futures):
             i = futures[future]
-            hex_colors, dmin_max, points, _, _ = future.result()
-            print(f"Run {i + 1}/{num_runs} completed with ΔE_max: {dmin_max:.2f}")
-            if dmin_max > np.max(dmin_maxs):
+            hex_colors, dmin, points, _, _ = future.result()
+            dmin = validate_result(points, _color_space, metric_space, show=False)
+            print(f"Run {i + 1}/{num_runs} completed with ΔE_max: {dmin:.2f}")
+            if dmin > np.max(dmins):
                 best_points = points
                 best_hexs = hex_colors
-                best_dmin = dmin_max
+                best_dmin = dmin
 
-            dmin_maxs.append(dmin_max)
+            dmins.append(dmin)
 
     t1 = timer()
     print(f"Total time: {(t1 - t0) * 1000:.2f} ms")
-    print(f"Best ΔE_max: {np.max(dmin_maxs):.2f}")
+    print(f"Best ΔE_max: {best_dmin:.2f}")
 
     # 可视化结果
     if best_points is not None:
-        plot_points(best_points, np.arange(len(dmin_maxs)), dmin_maxs, "Runs", r"Maximum $\Delta E$", color_space,
-                    metric_space)
+        plot_points(best_points, np.arange(len(dmins)), dmins,
+                    "Runs", r"$\Delta E_{min}$", _color_space, metric_space)
+        real_dmin = validate_result(best_points, _color_space, metric_space)
         plot_color_palette(best_hexs, best_points, color_space=color_space,
-                           title=rf"{numbers} color palette with $\Delta E_{{min}}={best_dmin:.1f}$ in {color_space}")
-        validate_result(best_points, color_space, metric_space)
+                           title=rf"{nums} {color_space} colors, $\Delta E_{{min}}={best_dmin:.1f}$ @ {metric_space}")
 
-    print(f"First 20 generated points in HEX format:\n{best_hexs[:20]}\n")
+        print(f"First 20 generated points in HEX format:\n{best_hexs[:20]}\n")
 
-    return best_hexs, best_dmin
+    return best_hexs, real_dmin
 
 
 def plot_points(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_space='CIE xyY'):
@@ -741,13 +717,17 @@ def plot_color_palette(hex_colors, original, color_space='sRGB', title="Color Pa
     """
     将颜色调色板可视化为带有 HEX 值的色块。
 
-    :param hex_colors: HEX 颜色代码的列表。
+    :param hex_colors: Hex code for the ploted colors
     :param original: Original Colors
-    :param color_space:
+    :param color_space: Color space of original colors
+    :param title: Plot tilte string
     """
     scale_range = 255
     if color_space in ["CMYK", "CMY"]:
         scale_range = 100
+        if not CMYK_PARAMS['output_cmyk']:
+            hex_colors = np.array(hex_colors, dtype=str)
+            original = auto_convert(colour.notation.HEX_to_RGB(hex_colors), 'sRGB', 'CMYK')
 
     n_colors = len(hex_colors)
     if n_colors > 256:
@@ -759,7 +739,7 @@ def plot_color_palette(hex_colors, original, color_space='sRGB', title="Color Pa
     cols = int(n_colors ** 0.5) * 1
     rows = (n_colors + cols - 1) // cols
 
-    fig, ax = plt.subplots(figsize=(max(min(cols * 1.5, 15),8), max(rows * 0.5, 6)))
+    fig, ax = plt.subplots(figsize=(max(min(cols * 1.5, 15), 8), max(rows * 0.6, 6)))
     ax.set_xlim(0, cols)
     ax.set_ylim(0, rows)
     ax.axis('off')
@@ -767,7 +747,7 @@ def plot_color_palette(hex_colors, original, color_space='sRGB', title="Color Pa
     block_height = 1
     text_y_pos = 0.5
 
-    brightness = auto_convert(original, color_space, 'CAM16-UCS')[:, 0]
+    brightness = auto_convert(original, color_space, 'CAM16UCS')[:, 0]
     for i, hex_color in enumerate(hex_colors):
         col = i % cols
         row = i // cols
@@ -778,7 +758,8 @@ def plot_color_palette(hex_colors, original, color_space='sRGB', title="Color Pa
         if simple_annotation:
             text = f"{hex_color}"
         else:
-            formatted_array = np.array2string(original[i], formatter={'float_kind': lambda x: f"{int(x*scale_range)}"})
+            formatted_array = np.array2string(original[i],
+                                              formatter={'float_kind': lambda x: f"{int(x * scale_range)}"})
             text = f"{hex_color}\n{formatted_array}"
         ax.text(col + block_width / 2, row + text_y_pos, text, ha='center', va='center', color=text_color)
 
@@ -792,13 +773,11 @@ if __name__ == '__main__':
     # print(100*auto_convert([0.95, 0.95, 0.95, 0], 'CMYK', 'CAM16-UCS'))
     # get_boundary_hull(11, "sRGB", "DIN99d")
 
-
     ### Run the simulation.
     # single_run(4, [1, 1, 1], color_space='sRGB', quality='medium')
-    single_run(100, [0, 0, 0], color_space='CMYK', metric_space='DIN99d', quality='low')
-    # multi_run(4, [1, 1, 1], color_space='sRGB', quality='low', num_runs=8)
-    # multi_run(4, [0, 0, 0], color_space='CMYK', quality='low', num_runs=8)
-
+    # single_run(9, [0, 0, 0], color_space='CMYK', metric_space='DIN99d', quality='low')
+    # multi_run(4, [1, 1, 1], color_space='sRGB', quality='low', num_runs=16)
+    multi_run(16, [0, 0, 0], color_space='CMYK', quality='low', num_runs=16)
 
     ### Batch run and save the results to a CSV file.
     # import csv
