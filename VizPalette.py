@@ -16,9 +16,9 @@ from utils import profile
 
 # Set Parameters for converting to/from CMYK icc profiles
 CMYK_PARAMS = {
-    'cmyk_icc': r'data\JapanColor2001Coated.icc',
-    'srgb_icc': r'data\sRGB Color Space Profile.icm',
-    'rec2020_icc': r'data\Rec2020.icm',
+    'cmyk_icc': 'data/JapanColor2001Coated.icc',
+    'srgb_icc': 'data/sRGB Color Space Profile.icm',
+    'rec2020_icc': 'data/Rec2020.icm',
     # 'renderingIntent': ImageCms.Intent.RELATIVE_COLORIMETRIC,
     # 'renderingIntent': ImageCms.Intent.ABSOLUTE_COLORIMETRIC,
     # 'flags': ImageCms.Flags.BLACKPOINTCOMPENSATION,
@@ -649,15 +649,15 @@ def multi_run(nums, given_colors=None, color_space='sRGB', metric_space='CAM16UC
 
     # 可视化结果
     if best_points is not None:
-        plot_points(best_points, np.arange(len(dmins)), dmins,
-                    "Runs", r"$\Delta E_{min}$", _color_space, metric_space)
-        real_dmin = validate_result(best_points, _color_space, metric_space)
-        plot_color_palette(best_hexs, best_points, color_space=color_space,
-                           title=rf"{nums} {color_space} colors, $\Delta E_{{min}}={best_dmin:.1f}$ @ {metric_space}")
+        # plot_points(best_points, np.arange(len(dmins)), dmins,
+        #             "Runs", r"$\Delta E_{min}$", _color_space, metric_space)
+        # real_dmin = validate_result(best_points, _color_space, metric_space)
+        # plot_color_palette(best_hexs, best_points, color_space=color_space,
+        #                    title=rf"{nums} {color_space} colors, $\Delta E_{{min}}={best_dmin:.1f}$ @ {metric_space}")
 
         print(f"First 20 generated points in HEX format:\n{best_hexs[:20]}\n")
 
-    return best_hexs, real_dmin
+    return best_hexs, best_dmin
 
 
 def plot_points(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_space='CIE xyY'):
@@ -777,20 +777,20 @@ if __name__ == '__main__':
     # single_run(4, [1, 1, 1], color_space='sRGB', quality='medium')
     # single_run(9, [0, 0, 0], color_space='CMYK', metric_space='DIN99d', quality='low')
     # multi_run(4, [1, 1, 1], color_space='sRGB', quality='low', num_runs=16)
-    multi_run(16, [0, 0, 0], color_space='CMYK', quality='low', num_runs=16)
+    # multi_run(16, [0, 0, 0], color_space='CMYK', quality='low', num_runs=16)
 
     ### Batch run and save the results to a CSV file.
-    # import csv
-    #
-    # result = [[0, 0, [None]]]
-    # for n in np.arange(256, 257, 1):
-    #     hexs, de = multi_run(n, quality='low', num_runs=32)
-    #     result.append([n, de, hexs])
-    #
-    #     csv_file = "result3.csv"
-    #     with open(csv_file, "w", newline='') as f:
-    #         writer = csv.writer(f)
-    #         writer.writerow(["Number of Colors", "Delta E", "Colors"])
-    #         for row in result:
-    #             new_row = [row[0], row[1], *row[2]]
-    #             writer.writerow(new_row)
+    import csv
+
+    result = [[0, 0, [None]]]
+    for n in np.arange(1, 51, 1):
+        hexs, de = multi_run(n+1, [0, 0, 0], color_space='CMYK', quality='low', num_runs=32)
+        result.append([n, de, hexs])
+
+        csv_file = "results/CMYK_to_sRGB_in_CAM16UCS.csv"
+        with open(csv_file, "w", newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["Number of Colors", "Delta E", "Colors"])
+            for row in result:
+                new_row = [row[0], row[1], *row[2]]
+                writer.writerow(new_row)
