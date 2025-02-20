@@ -14,7 +14,7 @@ To accurately reflect the visual differences in colors, a more precise [color di
 
 The basic principle of this program is: determine the boundary of sRGB (or other color gamuts) in the UCS, randomly generate N points within the boundary, apply repulsive forces between these points, simulate the motion of points in 3D space until they reach the boundary. After some time, the point distribution will stabilize. To prevent points from being fixed when they reach the boundary, random perturbations are applied to points that reach the boundary to give them a tendency to move away from the boundary.
 
-After comparison, this is the implementation method I found that maximizes the distance between colors. Although due to the randomness of the initial point selection, it sometimes falls into a local optimum rather than a global optimum.
+After comparison, **this is the best implementation method I found** that maximizes the distance between colors. Although due to the randomness of the initial point selection, it sometimes falls into a local optimum rather than a global optimum.
 
 Additionally, due to limitations in computational precision and time, the results found are not the theoretical optimal solution, but the gap with the theoretical maximum ΔE is usually less than 0.5. For this reason, the final output color sequence is not unique; especially for larger N, the results have greater diversity.
 
@@ -63,6 +63,7 @@ single_run(9, metric_space='DIN99d')
 <p align="center">
 <img src="example/color_patch_sRGB_in_DIN99d.png" width="500"/>
 <img src="example/color_patch_sRGB_in_Oklab.png" width="500"/>
+<img src="example/color_patch_sRGB_in_CIELab.png" width="500"/>
 </p>
 
 #### 3.2.3. Use More Computation Time to Get a Color List Closer to the Global Optimum
