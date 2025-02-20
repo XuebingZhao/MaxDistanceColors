@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from colour.plotting import plot_RGB_colourspaces_in_chromaticity_diagram_CIE1931, plot_RGB_colourspaces_in_chromaticity_diagram_CIE1976UCS
 
-from VizPalette import auto_convert
+from mdcolors import auto_convert
 
 # ICC 配置文件路径（请根据实际情况修改）
 cmyk_profile_path = r'.\JapanColor2001Coated.icc'

@@ -43,7 +43,7 @@ CAM_SPACES = [
     'CAM02LCD', 'CAM02SCD', 'CAM02UCS', 'CAM16LCD', 'CAM16SCD', 'CAM16UCS'
 ]
 UCS_SPACES = [
-    'CIE Lab', 'DIN99', 'DIN99b', 'DIN99c', 'DIN99d', 'ICaCb', 'Oklab', 'OSA UCS', 'Jzazaz', 'ICtCp', *CAM_SPACES[-6:]
+    'CIE Lab', 'DIN99', 'DIN99b', 'DIN99c', 'DIN99d', 'ICaCb', 'Oklab', 'Jzazaz', 'ICtCp', *CAM_SPACES[-6:]
 ]
 # Set labels based on color space
 LABEL_DICT = {
@@ -83,6 +83,9 @@ LABEL_DICT = {
     'CMY': ["Cyan", "Magenta", "Yellow"],
     'IHLS': ["H", "Y", "S"],
 }
+LABEL_DICT = {key.lower(): value for key, value in LABEL_DICT.items()}  # Convert keys to lowercase
+
+# Simulation parameters to choose from
 SIM_PARAMS = {
     'fast': {
         'dt': 0.001,
@@ -291,7 +294,7 @@ def get_boundary_hull(res=11, boundary='sRGB', workspace='CAM16UCS', hull_type='
     if boundary in ['CMYK', 'CMY']:
         table = auto_convert(auto_convert(table, workspace, boundary), boundary, workspace)
         # validate_result(table, workspace, workspace, show=True)
-        hull_type = CMYK_PARAMS['hull_type']
+        hull_type = CMYK_PARAMS['hull_type'] if hull_type == 'convex' else hull_type
 
     if hull_type != 'convex':
         hull = alphashape.alphashape(table, alpha=res / 4)
@@ -429,7 +432,7 @@ def maximize_delta_e(
     :return: Generated colors and their corresponding time and step values.
     """
     if uniform not in UCS_SPACES:
-        raise ValueError(f"{uniform} is not a perceptually uniform space. "
+        raise ValueError(f"'{uniform}' is not a perceptually uniform space. "
                          f"Please use a uniform space in:\n {UCS_SPACES}")
 
     # Transform input color space bounds to uniform bounds
@@ -444,6 +447,7 @@ def maximize_delta_e(
         p0 = [[]]
     p0 = auto_convert(np.array(p0), source, uniform)
     num_fixed = len(p0)
+    print(num_fixed)
 
     # Initialize the positions and velocities of the colors points.
     pos = init(num - p0.shape[0], in_bounds, seed=seed, **kwarg)
@@ -518,7 +522,7 @@ def validate_result(points, color_space, target_space, show=False):
         labels = ['J', 'a', 'b']
         target_space = target_space.replace('-', '')
     else:
-        labels = LABEL_DICT.get(target_space, ["unknown x", "unknown y", "unknown z"])
+        labels = LABEL_DICT.get(target_space.lower(), ["unknown x", "unknown y", "unknown z"])
 
     pos = auto_convert(points, color_space, target_space)
     tree = cKDTree(pos)
@@ -674,7 +678,7 @@ def plot_points(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_spa
         labels = ['J', 'a', 'b']
         target_space = target_space.replace('-', '')
     else:
-        labels = LABEL_DICT.get(target_space, ["unknown x", "unknown y", "unknown z"])
+        labels = LABEL_DICT.get(target_space.lower(), ["unknown x", "unknown y", "unknown z"])
 
     colors = auto_convert(a, source_space, target_space)
     if target_space in RGB_SPACES:
@@ -745,7 +749,7 @@ def plot_color_palette(hex_colors, original, color_space='sRGB', title="Color Pa
 
     fig, ax = plt.subplots(figsize=(max(min(cols * 1.5, 15), 8), max(rows * 0.6, 6)))
     ax.set_xlim(0, cols)
-    ax.set_ylim(0, rows)
+    ax.set_ylim(rows, 0)
     ax.axis('off')
     block_width = 1
     block_height = 1

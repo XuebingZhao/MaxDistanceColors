@@ -1,7 +1,7 @@
 import csv
 import numpy as np
 
-from VizPalette import multi_run
+from mdcolors import multi_run
 
 if __name__ == '__main__':
     result = [[0, 0, [None]]]
