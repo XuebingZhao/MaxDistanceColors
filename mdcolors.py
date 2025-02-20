@@ -447,7 +447,6 @@ def maximize_delta_e(
         p0 = [[]]
     p0 = auto_convert(np.array(p0), source, uniform)
     num_fixed = len(p0)
-    print(num_fixed)
 
     # Initialize the positions and velocities of the colors points.
     pos = init(num - p0.shape[0], in_bounds, seed=seed, **kwarg)

@@ -56,7 +56,11 @@ from mdcolors import single_run
 
 single_run(9, metric_space='DIN99d')
 ```
-![color_patch_sRGB_in_DIN99d.png](example/color_patch_sRGB_in_DIN99d.png)
+
+[//]: # (![color_patch_sRGB_in_DIN99d.png]&#40;example/color_patch_sRGB_in_DIN99d.png&#41;)
+<p align="center">
+<img src="example/color_patch_sRGB_in_DIN99d.png" width="600"/>
+</p>
 
 #### 3.2.3. 用更多的运算时间，换来更加接近全局最优的色彩列表
 ##### 3.2.3.1. 提高模拟精度
