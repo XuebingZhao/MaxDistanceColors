@@ -37,7 +37,9 @@ Wait for a few seconds to a minute, and the following plot will be generated, sh
 ![single_run](example/single_run.png)
 
 Below is a visualization of the generated colors and their Hex and RGB representations:
-![color_patch_sRGB.png](example/color_patch_sRGB.png)
+<p align="center">
+<img src="example/color_patch_sRGB.png" width="500"/>
+</p>
 
 ### 3.2. Advanced Usage
 #### 3.2.1. Restrict Colors to the CMYK Space, Select Colors for Visual Differences in Printed Materials
@@ -46,7 +48,9 @@ from mdcolors import single_run
 
 single_run(9, color_space='CMYK')
 ```
-![color_patch_CMYK.png](example/color_patch_CMYK.png)
+<p align="center">
+<img src="example/color_patch_CMYK.png" width="500"/>
+</p>
 
 >Note: Since the conversion between CMYK and RGB is not uniquely corresponding, the colors converted back to CMYK will have some differences, so the color difference uniformity of the generated colors will be worse than RGB colors. Using a concave hull instead of a convex hull to model the boundary may improve uniformity, but the program speed will be more than 5 times slower, which is usually not necessary. If needed, add a line before running: `CMYK_PARAMS['hull_type'] = 'concave'`
 
@@ -56,7 +60,10 @@ from mdcolors import single_run
 
 single_run(9, metric_space='DIN99d')
 ```
-![color_patch_sRGB_in_DIN99d.png](example/color_patch_sRGB_in_DIN99d.png)
+<p align="center">
+<img src="example/color_patch_sRGB_in_DIN99d.png" width="500"/>
+<img src="example/color_patch_sRGB_in_Oklab.png" width="500"/>
+</p>
 
 #### 3.2.3. Use More Computation Time to Get a Color List Closer to the Global Optimum
 ##### 3.2.3.1. Increase Simulation Accuracy

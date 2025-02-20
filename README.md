@@ -37,7 +37,9 @@ single_run(9)
 ![single_run](example/single_run.png)
 
 以下为生成的色彩的可视化以及他们的Hex表示以及RGB表示：
-![color_patch_sRGB.png](example/color_patch_sRGB.png)
+<p align="center">
+<img src="example/color_patch_sRGB.png" width="500"/>
+</p>
 
 ### 3.2. 进阶使用
 #### 3.2.1. 限制颜色到CMYK空间中，针对印刷制品上的视觉差异选取颜色
@@ -46,7 +48,9 @@ from mdcolors import single_run
 
 single_run(9, color_space='CMYK')
 ```
-![color_patch_CMYK.png](example/color_patch_CMYK.png)
+<p align="center">
+<img src="example/color_patch_CMYK.png" width="500"/>
+</p>
 
 >注：由于CMYK与RGB之间的转化不是唯一对应的，RGB转换回CMYK之后的色彩会有一定差异，因此生成的颜色之间的色差均匀性会差于RGB色彩。使用凹包而不是凸包来对边界建模，可能对均匀性有一定提升，但程序速度会慢5倍以上，通常没有这个必要。如有需要，在run之前加入一行：`CMYK_PARAMS['hull_type'] = 'concave'`
 
@@ -56,10 +60,9 @@ from mdcolors import single_run
 
 single_run(9, metric_space='DIN99d')
 ```
-
-[//]: # (![color_patch_sRGB_in_DIN99d.png]&#40;example/color_patch_sRGB_in_DIN99d.png&#41;)
 <p align="center">
-<img src="example/color_patch_sRGB_in_DIN99d.png" width="600"/>
+<img src="example/color_patch_sRGB_in_DIN99d.png" width="500"/>
+<img src="example/color_patch_sRGB_in_Oklab.png" width="500"/>
 </p>
 
 #### 3.2.3. 用更多的运算时间，换来更加接近全局最优的色彩列表
