@@ -120,6 +120,11 @@ if __name__ == '__main__':
 使用[result/Colors.xlsm](result/Colors.xlsm)文件可以得到如下所示的结果：
 ![batch_run_result.png](example/batch_run_result.png)
 
+------------
+## 4. 另见
+1. [bdamokos/pick-distinct-colors](https://github.com/bdamokos/pick-distinct-colors)
+2. [medialab/iwanthue](https://github.com/medialab/iwanthue)
+3. Tim Holy's [Generate maximally perceptually-distinct colors](http://www.mathworks.se/matlabcentral/fileexchange/29702-generate-maximally-perceptually-distinct-colors) for MATLAB
 
 ------------
 ## TODO:
