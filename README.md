@@ -55,10 +55,11 @@ single_run(9, color_space='CMYK')
 >注：由于CMYK与RGB之间的转化不是唯一对应的，RGB转换回CMYK之后的色彩会有一定差异，因此生成的颜色之间的色差均匀性会差于RGB色彩。使用凹包而不是凸包来对边界建模，可能对均匀性有一定提升，但程序速度会慢5倍以上，通常没有这个必要。如有需要，在run之前加入一行：`CMYK_PARAMS['hull_type'] = 'concave'`
 
 #### 3.2.2. 使用其他的均匀色彩空间，比如DIN99d，Oklab等
+
 ```python
 from mdcolors import single_run
 
-single_run(9, metric_space='DIN99d')
+single_run(9, uniform_space='DIN99d')
 ```
 <p align="center">
 <img src="example/color_patch_sRGB_in_DIN99d.png" width="500"/>

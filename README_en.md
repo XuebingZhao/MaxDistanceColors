@@ -55,10 +55,11 @@ single_run(9, color_space='CMYK')
 >Note: Since the conversion between CMYK and RGB is not uniquely corresponding, the colors converted back to CMYK will have some differences, so the color difference uniformity of the generated colors will be worse than RGB colors. Using a concave hull instead of a convex hull to model the boundary may improve uniformity, but the program speed will be more than 5 times slower, which is usually not necessary. If needed, add a line before running: `CMYK_PARAMS['hull_type'] = 'concave'`
 
 #### 3.2.2. Use Other Uniform Color Spaces, Such as DIN99d, Oklab, etc.
+
 ```python
 from mdcolors import single_run
 
-single_run(9, metric_space='DIN99d')
+single_run(9, uniform_space='DIN99d')
 ```
 <p align="center">
 <img src="example/color_patch_sRGB_in_DIN99d.png" width="500"/>
