@@ -3,18 +3,21 @@
 [中文](README.md)
 
 -----------
-## 1. Functionality
-In scientific plotting and data visualization, it is necessary to ensure that the visual differences between different colors are sufficiently large. To achieve this, this program was developed to generate an optimal color palette. The main function is to generate a list of colors based on a given number, ensuring that the differences between colors are maximized.
+## 1. Introduction
+In scientific plotting and data visualization, it is necessary to ensure that the visual differences between different colors are sufficiently large. To achieve this, this project was developed to generate an optimal color palette. The main function is to generate a list of colors based on a given number, ensuring that the differences between colors are maximized.
 
-Pre-calculated color list of maximized color difference for each quantity between 2-51, download directly here: 
+The list of 2-51 colors with the largest color difference has been calculated (_including white, query by the number of colors needed + 1_), and can be downloaded directly:: 
 
 [sRGB](results/sRGB_CAM16.csv) | [sRGB inside CMYK](results/sRGB_x_Japan2001Coated_CAM16.csv) | [Colored Excel Spreadsheet](results/Colors.xlsm)
 
+An application example is shown below:
+![use_case](example/use_case.png)
+
 -----------
 ## 2. Basic Principles
-To accurately reflect the visual differences in colors, a more precise [color difference](https://en.wikipedia.org/wiki/Color_difference) (ΔE) metric is needed, rather than simply maximizing the Euclidean distance in the RGB space. Existing ΔE standards include CIE76, CIE94, CIEDE2000, etc., with varying levels of algorithmic complexity. Instead of traversing all colors and then judging their ΔE with existing colors, a simpler method is to **make the distances between colors as uniform and maximized as possible** in a [uniform color space](https://en.wikipedia.org/wiki/Color_appearance_model) (UCS). Currently (2025), uniform color spaces with excellent perceptual uniformity include CAM16UCS, DIN99d, OKLab, etc.
+To accurately reflect the visual differences in colors, a more precise [color difference](https://en.wikipedia.org/wiki/Color_difference) (ΔE) metric is needed, rather than simply maximizing the Euclidean distance in the RGB space. Existing ΔE standards include CIE76, CIE94, CIEDE2000, etc., with varying levels of algorithmic complexity. Instead of traversing all colors and then judging their ΔE with existing colors, a simpler method is to **make the distances between colors as uniform and maximized as possible** in a [uniform color space](https://en.wikipedia.org/wiki/Color_appearance_model) (UCS). Currently (2025), the uniform color spaces that perform well in terms of perceptual uniformity include the [CAM16 series](https://facelessuser.github.io/coloraide/colors/cam16_ucs/), [DIN99d](https://facelessuser.github.io/coloraide/colors/din99o/), [OKLab](https://facelessuser.github.io/coloraide/colors/oklab/), etc. Among them, [CAM16LCD](https://facelessuser.github.io/coloraide/colors/cam16_lcd/) is more suitable for large color difference applications and is more appropriate for this project.
 
-The basic principle of this program is: determine the boundary of sRGB (or other color gamuts) in the UCS, randomly generate N points within the boundary, apply repulsive forces between these points, simulate the motion of points in 3D space until they reach the boundary. After some time, the point distribution will stabilize. To prevent points from being fixed when they reach the boundary, random perturbations are applied to points that reach the boundary to give them a tendency to move away from the boundary.
+The basic principle of this project is: determine the boundary of sRGB (or other color gamuts) in the UCS, randomly generate N points within the boundary, apply repulsive forces between these points, simulate the motion of points in 3D space until they reach the boundary. After some time, the point distribution will stabilize. To prevent points from being fixed when they reach the boundary, random perturbations are applied to points that reach the boundary to give them a tendency to move away from the boundary.
 
 After comparison, **this is the best implementation method I found** that maximizes the distance between colors. Although due to the randomness of the initial point selection, it sometimes falls into a local optimum rather than a global optimum.
 
@@ -35,7 +38,7 @@ from mdcolors import single_run
 
 single_run(9)
 ```
-Wait for a few seconds to a minute, and the following plot will be generated, showing the distribution of the final 9 colors in the CAM16UCS color space, as well as the change in ΔE between the closest pair of colors during the optimization process:
+Wait for a few seconds to a minute, and the following plot will be generated, showing the distribution of the final 9 colors in the CAM16LCD color space, as well as the change in ΔE between the closest pair of colors during the optimization process:
 ![single_run](example/single_run.png)
 
 Below is a visualization of the generated colors and their Hex and RGB representations:
@@ -67,7 +70,7 @@ single_run(9, uniform_space='DIN99d')
 <img src="example/color_patch_sRGB_in_DIN99d.png" width="500"/>
 </p>
 
->Note: When using Oklab or CIELab as a uniform color space, the boundaries of the RGB color gamut are generally non-convex, and this program uses Delaunay triangulation to accelerate the judgment of the inside and outside of the color gamut by default, which will lead to a large error, at this time, you can add `hull_type='concave'` in the parameter to obtain more accurate results.
+>Note: When using Oklab or CIELab as a uniform color space, the boundaries of the RGB color gamut are generally non-convex, and this project uses Delaunay triangulation to accelerate the judgment of the inside and outside of the color gamut by default, which will lead to a large error, at this time, you can add `hull_type='concave'` in the parameter to obtain more accurate results.
 <p align="center">
 <img src="example/color_patch_sRGB_in_Oklab.png" width="500"/>
 <img src="example/color_patch_sRGB_in_CIELab.png" width="500"/>
@@ -114,7 +117,7 @@ from mdcolors import multi_run
 if __name__ == '__main__':
     result = [[0, 0, [None]]]
     for n in np.arange(2, 33, 1):
-        csv_file = "sRGB_x_Japan2001Coated_CAM16.csv"
+        csv_file = "sRGB_x_Japan2001Coated_CAM16UCS.csv"
         hexs, de = multi_run(n, [1, 1, 1], color_space='CMYK', quality='medium', num_runs=32, show=False)
         result.append([n, de, hexs])
 

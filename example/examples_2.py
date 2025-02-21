@@ -1,7 +1,7 @@
 from mdcolors import multi_run
 
 if __name__ == '__main__':
-    # Run more times and choose the best one
+    # Run several times and choose the best one
     # multi_run(9, num_runs=20)
 
     # Constrained in CMYK space

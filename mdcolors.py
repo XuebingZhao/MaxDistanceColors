@@ -14,6 +14,9 @@ import colour
 import alphashape
 import trimesh
 
+
+# Resize factor for brightness
+KL = 1.0
 # Set Parameters for converting to/from CMYK icc profiles
 cdir = os.path.dirname(os.path.abspath(__file__))
 CMYK_PARAMS = {
@@ -267,7 +270,7 @@ def remove_duplicate_points(table, threshold=0.0001):
     return table[keep_mask]
 
 
-def get_boundary_hull(res=11, boundary='sRGB', workspace='CAM16UCS', hull_type=None, show=False):
+def get_boundary_hull(res=11, boundary='sRGB', workspace='CAM16LCD', hull_type=None, show=False):
     """
     Generate a Delaunay triangulation of the boundary of the given color space in the given workspace.
     :param res: Grid resolution of each dimension.
@@ -292,6 +295,8 @@ def get_boundary_hull(res=11, boundary='sRGB', workspace='CAM16UCS', hull_type=N
     if boundary in ['CMYK', 'CMY']:
         table = auto_convert(auto_convert(table, workspace, boundary), boundary, workspace)
 
+    table[:, 0] *= KL
+
     if hull_type is not None and hull_type != 'convex':
         hull = alphashape.alphashape(table, alpha=res / 1.5)
     else:
@@ -303,7 +308,7 @@ def get_boundary_hull(res=11, boundary='sRGB', workspace='CAM16UCS', hull_type=N
     return hull
 
 
-def in_bounds(p, boundary='sRGB', workspace='CAM16UCS', hull=None):
+def in_bounds(p, boundary='sRGB', workspace='CAM16LCD', hull=None):
     """
     Determine whether a point is within the boundary of the given color space in the given workspace.
     :param p: Coordinate of the given point.
@@ -412,7 +417,7 @@ def deal_out_of_bounds(s, v, dt, **kwargs):
 
 
 def maximize_delta_e(
-        num, p0=None, source='sRGB', uniform='CAM16UCS',
+        num, p0=None, source='sRGB', uniform='CAM16LCD',
         dt=1E-4, t_end=1000, t_tol=1E-4, steps=1000, skip=10, damping=0.99,
         seed=None, **kwargs):
     """
@@ -452,6 +457,7 @@ def maximize_delta_e(
     else:
         p0 = auto_convert(p0, source, uniform)
     num_fixed = len(p0)
+    p0[:, 0] *= KL
 
     # Initialize the positions and velocities of the colors points.
     pos = init(num - p0.shape[0], in_bounds, seed=seed, **bound_kwargs)
@@ -513,6 +519,7 @@ def maximize_delta_e(
     # For CMY space, convert back to sRGB
     if source in ['CMY', 'CMYK'] and not CMYK_PARAMS['output_cmyk']:
         source = 'sRGB'
+    best_pos[:, 0] /= KL
     colors = auto_convert(best_pos, uniform, source)
     colors = np.clip(colors, 0, 1)
     # print(f"Max and Min values: {np.max(colors)}, {np.min(colors)}")
@@ -543,11 +550,12 @@ def _setup_3d_axes(ax, labels):
     """
     Set up the properties of a 3D axes using the current xlim and ylim from ax.
     """
-    x_min, x_max = ax.get_xlim()
-    y_min, y_max = ax.get_ylim()
-    x_lim = np.max(np.abs([x_min, x_max]))
-    y_lim = np.max(np.abs([y_min, y_max]))
-    xy_lim = max(x_lim, y_lim)
+    # x_min, x_max = ax.get_xlim()
+    # y_min, y_max = ax.get_ylim()
+    # x_lim = np.max(np.abs([x_min, x_max]))
+    # y_lim = np.max(np.abs([y_min, y_max]))
+    # xy_lim = max(x_lim, y_lim)
+    xy_lim = 0.5 * KL
 
     ax.set_xlabel(f"${labels[0]}$")
     ax.set_ylabel(f"${labels[1]}$")
@@ -560,8 +568,10 @@ def _setup_3d_axes(ax, labels):
 
 def validate_result(points, source_space, target_space, hull=None, show=False):
     pos = auto_convert(points, source_space, target_space)
-    tree = cKDTree(pos)
-    dists, _ = tree.query(pos, k=2)
+    _pos = pos
+    _pos[:, 0] *= KL
+    tree = cKDTree(_pos)
+    dists, _ = tree.query(_pos, k=2)
     de_min = np.min(dists[:, 1])
 
     if show:
@@ -604,7 +614,7 @@ def validate_result(points, source_space, target_space, hull=None, show=False):
     return de_min * 100
 
 
-def run(nums, given_colors, color_space='sRGB', uniform_space='CAM16UCS', quality='medium', seed=None, **kwargs):
+def run(nums, given_colors, color_space='sRGB', uniform_space='CAM16LCD', quality='medium', seed=None, **kwargs):
     # Deal with default colors list
     if given_colors is None:
         given_colors = np.array([[1, 1, 1]])
@@ -626,7 +636,7 @@ def run(nums, given_colors, color_space='sRGB', uniform_space='CAM16UCS', qualit
     return hex_colors, dmin_list.max(), points, times, dmin_list
 
 
-def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16UCS', quality="fast", **kwargs):
+def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16LCD', quality="fast", **kwargs):
     _color_space = color_space
     if color_space in ["CMYK", "CMY"] and not CMYK_PARAMS['output_cmyk']:
         _color_space = "sRGB"
@@ -652,7 +662,7 @@ def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16
 
 
 def multi_run(nums, given_colors=None,
-              color_space='sRGB', unifrom_space='CAM16UCS', quality="fast", num_runs=20, show=True, **kwargs):
+              color_space='sRGB', unifrom_space='CAM16LCD', quality="fast", num_runs=20, show=True, **kwargs):
     _color_space = color_space
     if color_space in ["CMYK", "CMY"] and not CMYK_PARAMS['output_cmyk']:
         _color_space = "sRGB"
@@ -719,6 +729,7 @@ def plot_points_and_line(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', t
         hull = trimesh.Trimesh(vertices=hull.points, faces=hull.convex_hull)
         hull.fix_normals()
     points = np.array(hull.vertices)
+    points[:, 0] /= KL
     triangles = hull.faces
 
     # Adjust the order of labels and axis
@@ -803,7 +814,7 @@ def plot_color_palette(hex_colors, original, color_space='sRGB', title="Color Pa
 
 if __name__ == '__main__':
     ### Single function test.
-    # print(100*auto_convert([0.95, 0.95, 0.95, 0], 'CMYK', 'CAM16UCS'))
+    # print(100*auto_convert([0.95, 0.95, 0.95, 0], 'CMYK', 'CAM16LCD'))
     get_boundary_hull(11, "sRGB", "Oklab", hull_type='convex', show=True)
 
     ### Run the simulation.
