@@ -6,7 +6,9 @@
 ## 1. 功能
 在科学绘图和数据可视化中，需要让不同颜色之间的视觉差异足够大，为此开发了此程序来生成最佳的颜色色板。主要功能是根据给定数量生成颜色列表，确保颜色之间差异最大化。
 
-已经计算好的，2-50之间每个数量的最大化色差的颜色列表，直接点此下载：[Colors.xlsm](results/Colors.xlsm)
+已计算好的，2-51之间每个数量的最大化色差的颜色列表，直接点此下载：
+
+[sRGB](results/sRGB_CAM16.csv) | [sRGB inside CMYK](results/sRGB_x_Japan2001Coated_CAM16.csv) | [带着色的Excel表格](results/Colors.xlsm)
 
 -----------
 ## 2. 基本原理
@@ -52,7 +54,7 @@ single_run(9, color_space='CMYK')
 <img src="example/color_patch_CMYK.png" width="500"/>
 </p>
 
->注：由于CMYK与RGB之间的转化不是唯一对应的，RGB转换回CMYK之后的色彩会有一定差异，因此生成的颜色之间的色差均匀性会差于RGB色彩。使用凹包而不是凸包来对边界建模，可能对均匀性有一定提升，但程序速度会慢5倍以上，通常没有这个必要。如有需要，在run之前加入一行：`CMYK_PARAMS['hull_type'] = 'concave'`
+>注：由于CMYK与RGB之间的转化不是唯一对应的，RGB转换回CMYK之后的色彩会有一定差异，因此生成的颜色之间的色差均匀性会差于RGB色彩。使用凹包而不是凸包来对边界建模，可能对均匀性有一定提升，但程序速度会慢5倍以上，通常没有这个必要。如有需要，增加一项参数`'hull_type'='concave'`
 
 #### 3.2.2. 使用其他的均匀色彩空间，比如DIN99d，Oklab等
 
@@ -63,6 +65,10 @@ single_run(9, uniform_space='DIN99d')
 ```
 <p align="center">
 <img src="example/color_patch_sRGB_in_DIN99d.png" width="500"/>
+</p>
+
+>注：使用 Oklab 或 CIELab 作为均匀色彩空间时，RGB色域在其中的边界一般是非凸的，本程序默认借助Delaunay三角剖分来加速判断色域内外在此时会导致较大误差，此时可在参数中增加`'hull_type'='concave'`来获取更准确结果。
+<p align="center">
 <img src="example/color_patch_sRGB_in_Oklab.png" width="500"/>
 <img src="example/color_patch_sRGB_in_CIELab.png" width="500"/>
 </p>

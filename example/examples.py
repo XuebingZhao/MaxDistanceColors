@@ -11,6 +11,7 @@ single_run(9)
 
 # Using DIN99d as Uniform-Color-Space
 # single_run(9, uniform_space='DIN99d')
+# single_run(9, uniform_space='Oklab', hull_type='concave')  # Use concave hull for better results, but much slower
 
 # Spend more time on higher quality, 'fast'->'medium'->'slow'
 # single_run(9, quality='medium')

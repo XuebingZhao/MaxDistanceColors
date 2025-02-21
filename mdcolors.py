@@ -14,7 +14,6 @@ import colour
 import alphashape
 import trimesh
 
-
 # Set Parameters for converting to/from CMYK icc profiles
 cdir = os.path.dirname(os.path.abspath(__file__))
 CMYK_PARAMS = {
@@ -25,8 +24,7 @@ CMYK_PARAMS = {
     # 'renderingIntent': ImageCms.Intent.ABSOLUTE_COLORIMETRIC,
     'flags': ImageCms.Flags.BLACKPOINTCOMPENSATION,
     # 'intermediate_space': 'ITU-R BT.2020',
-    'output_cmyk': True,    # Else output RGB, which might oversaturated.
-    # 'hull_type': 'concave',     # 'concave', 'convex'. Trimesh for concave hull, very slow.
+    'output_cmyk': True,  # Else output RGB, which might oversaturated.
 }
 CMYK_PARAMS.setdefault('intermediate_space', 'sRGB')
 if CMYK_PARAMS['intermediate_space'] == 'ITU-R BT.2020':
@@ -36,7 +34,6 @@ else:
 CMYK_PARAMS.setdefault('renderingIntent', ImageCms.Intent.PERCEPTUAL)
 CMYK_PARAMS.setdefault('flags', ImageCms.Flags.NONE)
 CMYK_PARAMS.setdefault('output_cmyk', False)
-CMYK_PARAMS.setdefault('hull_type', 'convex')
 
 # Set colourspace
 colour.set_domain_range_scale("1")
@@ -46,7 +43,7 @@ CAM_SPACES = [
     'CAM02LCD', 'CAM02SCD', 'CAM02UCS', 'CAM16LCD', 'CAM16SCD', 'CAM16UCS'
 ]
 UCS_SPACES = [
-    'CIE Lab', 'DIN99', 'DIN99b', 'DIN99c', 'DIN99d', 'ICaCb', 'Oklab', 'Jzazaz', 'ICtCp', *CAM_SPACES[-6:]
+    'CIE Lab', 'DIN99', 'DIN99b', 'DIN99c', 'DIN99d', 'ICaCb', 'Oklab', 'Jzazbz', 'ICtCp', *CAM_SPACES[-6:]
 ]
 # Set labels based on color space
 LABEL_DICT = {
@@ -74,7 +71,7 @@ LABEL_DICT = {
     'OSA UCS': ["L", "j", "g"],
     'ProLab': ["L", "a", "b"],
     'Yrg': ["Y", "r", "g"],
-    'Jzazaz': ["J_z", "a_z", "b_z"],
+    'Jzazbz': ["J_z", "a_z", "b_z"],
     'Izazbz': ["I_z", "a_z", "b_z"],
     'YCbCr': ["Y'", "Cb", "Cr"],
     'YcCbcCrc': ["Y'", "Cbc'", "Crc'"],
@@ -113,7 +110,7 @@ SIM_PARAMS = {
         't_tol': 0.00005,
         'skip': 1,
         'damping': 0.998
-    }
+    },
 }
 
 
@@ -270,7 +267,7 @@ def remove_duplicate_points(table, threshold=0.0001):
     return table[keep_mask]
 
 
-def get_boundary_hull(res=11, boundary='sRGB', workspace='CAM16UCS', hull_type='convex', show=False):
+def get_boundary_hull(res=11, boundary='sRGB', workspace='CAM16UCS', hull_type=None, show=False):
     """
     Generate a Delaunay triangulation of the boundary of the given color space in the given workspace.
     :param res: Grid resolution of each dimension.
@@ -292,12 +289,10 @@ def get_boundary_hull(res=11, boundary='sRGB', workspace='CAM16UCS', hull_type='
     table = auto_convert(sp, boundary, workspace)
     table = remove_duplicate_points(table, threshold=0.001)
     # validate_result(table, workspace, workspace, show=True)
-
     if boundary in ['CMYK', 'CMY']:
         table = auto_convert(auto_convert(table, workspace, boundary), boundary, workspace)
-        hull_type = CMYK_PARAMS['hull_type'] if hull_type == 'convex' else hull_type
 
-    if hull_type != 'convex':
+    if hull_type is not None and hull_type != 'convex':
         hull = alphashape.alphashape(table, alpha=res / 1.5)
     else:
         hull = Delaunay(table)
@@ -419,7 +414,7 @@ def deal_out_of_bounds(s, v, dt, **kwargs):
 def maximize_delta_e(
         num, p0=None, source='sRGB', uniform='CAM16UCS',
         dt=1E-4, t_end=1000, t_tol=1E-4, steps=1000, skip=10, damping=0.99,
-        seed=None):
+        seed=None, **kwargs):
     """
     Main function to maximize deltaE.
     :param num: Number of particles to simulate.
@@ -441,11 +436,12 @@ def maximize_delta_e(
                          f"Please use a uniform space in:\n {UCS_SPACES}")
 
     # Transform input color space bounds to uniform bounds
-    hull = get_boundary_hull(boundary=source, workspace=uniform)
+    hull_type = kwargs.get('hull_type', None)
+    hull = get_boundary_hull(boundary=source, workspace=uniform, hull_type=hull_type)
     # hull = None
 
     # kwargs for in_bounds function
-    kwarg = {'boundary': source, 'workspace': uniform, 'hull': hull}
+    bound_kwargs = {'boundary': source, 'workspace': uniform, 'hull': hull}
 
     # Deal with given initial points
     if p0 is None:
@@ -458,7 +454,7 @@ def maximize_delta_e(
     num_fixed = len(p0)
 
     # Initialize the positions and velocities of the colors points.
-    pos = init(num - p0.shape[0], in_bounds, seed=seed, **kwarg)
+    pos = init(num - p0.shape[0], in_bounds, seed=seed, **bound_kwargs)
     if p0.shape[0] > 0:
         pos = np.vstack([p0, pos])
     vel = np.zeros_like(pos, dtype=np.float32)
@@ -480,7 +476,7 @@ def maximize_delta_e(
         forces = compute_forces(pos, tree)
         forces[:num_fixed] = 0  # Fixed particles don't move
         new_pos, new_vel = update_positions(pos, vel, forces, step, damping=damping)
-        new_pos, new_vel = deal_out_of_bounds(new_pos, new_vel, step, **kwarg)
+        new_pos, new_vel = deal_out_of_bounds(new_pos, new_vel, step, **bound_kwargs)
 
         if i % skip == 0:
             # Update the KDTree
@@ -518,6 +514,7 @@ def maximize_delta_e(
     if source in ['CMY', 'CMYK'] and not CMYK_PARAMS['output_cmyk']:
         source = 'sRGB'
     colors = auto_convert(best_pos, uniform, source)
+    colors = np.clip(colors, 0, 1)
     # print(f"Max and Min values: {np.max(colors)}, {np.min(colors)}")
 
     return np.array(all_time), np.array(d_mins) * 100, np.array(colors), np.array(all_step)
@@ -607,45 +604,44 @@ def validate_result(points, source_space, target_space, hull=None, show=False):
     return de_min * 100
 
 
-def run(numbers, given_colors, color_space='sRGB', uniform_space='CAM16UCS', quality='medium', seed=None):
+def run(nums, given_colors, color_space='sRGB', uniform_space='CAM16UCS', quality='medium', seed=None, **kwargs):
     # Deal with default colors list
     if given_colors is None:
         given_colors = np.array([[1, 1, 1]])
     given_colors = np.atleast_2d(given_colors)
 
-    kwargs = SIM_PARAMS.get(quality, SIM_PARAMS['medium'])
+    kwargs.update(SIM_PARAMS.get(quality, SIM_PARAMS['medium']))
 
     # Execute the simulation
     times, dmin_list, points, _ = maximize_delta_e(
-        numbers, given_colors, color_space, uniform_space,
-        seed=seed,
-        **kwargs
+        nums, given_colors, color_space, uniform_space, seed=seed, **kwargs
     )
 
     # Convert the points to HEX format
     spoints = points
-    if color_space in ["CMYK", "CMY"] and CMYK_PARAMS['output_cmyk']:    # Convert CMYK to sRGB to generate HEX
+    if color_space in ["CMYK", "CMY"] and CMYK_PARAMS['output_cmyk']:  # Convert CMYK to sRGB to generate HEX
         spoints = auto_convert(spoints, color_space, "sRGB")
     hex_colors = colour.notation.RGB_to_HEX(np.clip(spoints, 0, 1))
 
     return hex_colors, dmin_list.max(), points, times, dmin_list
 
 
-def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16UCS', quality="fast"):
+def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16UCS', quality="fast", **kwargs):
     _color_space = color_space
     if color_space in ["CMYK", "CMY"] and not CMYK_PARAMS['output_cmyk']:
         _color_space = "sRGB"
     # Execute the simulation
     t0 = timer()
     hex_colors, dmin, points, times, dmin_list = run(
-        nums, given_colors, color_space, uniform_space, quality
+        nums, given_colors, color_space, uniform_space, quality, **kwargs
     )
     t1 = timer()
     print(f"Total time: {(t1 - t0) * 1000:.2f} ms")
     print(f"Best δE: {dmin:.2f}")
 
     # 可视化结果
-    plot_points(points, times, dmin_list, "Time", r"Minimum $\Delta E$", _color_space, uniform_space)
+    plot_points_and_line(points, times, dmin_list, "Time", r"Minimum $\Delta E$",
+                         _color_space, uniform_space, hull_type=kwargs.get('hull_type', None))
     real_dmin = validate_result(points, _color_space, uniform_space)
     plot_color_palette(hex_colors, points, color_space=color_space,
                        title=rf"{nums} {color_space} colors, $\Delta E_{{min}}={real_dmin:.1f}$ @ {uniform_space}")
@@ -656,7 +652,7 @@ def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16
 
 
 def multi_run(nums, given_colors=None,
-              color_space='sRGB', unifrom_space='CAM16UCS', quality="fast", num_runs=20, show=True):
+              color_space='sRGB', unifrom_space='CAM16UCS', quality="fast", num_runs=20, show=True, **kwargs):
     _color_space = color_space
     if color_space in ["CMYK", "CMY"] and not CMYK_PARAMS['output_cmyk']:
         _color_space = "sRGB"
@@ -671,7 +667,7 @@ def multi_run(nums, given_colors=None,
     with ProcessPoolExecutor(max_workers=2) as executor:
         futures = {
             executor.submit(
-                run, nums, given_colors, color_space, unifrom_space, quality, seed=i
+                run, nums, given_colors, color_space, unifrom_space, quality, seed=i, **kwargs
             ): i for i in range(num_runs)
         }
         for future in as_completed(futures):
@@ -693,8 +689,8 @@ def multi_run(nums, given_colors=None,
     # 可视化结果
     if best_points is not None:
         if show:
-            plot_points(best_points, np.arange(len(dmins)), dmins,
-                        "Runs", r"$\Delta E_{min}$", _color_space, unifrom_space)
+            plot_points_and_line(best_points, np.arange(len(dmins)), dmins, "Runs", r"$\Delta E_{min}$",
+                                 _color_space, unifrom_space, hull_type=kwargs.get('hull_type', None))
             validate_result(best_points, _color_space, unifrom_space)
             plot_color_palette(
                 best_hexs, best_points, color_space=color_space,
@@ -705,7 +701,7 @@ def multi_run(nums, given_colors=None,
     return best_hexs, best_dmin
 
 
-def plot_points(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_space='CIE xyY'):
+def plot_points_and_line(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_space='CIE xyY', hull_type=None):
     colour.set_domain_range_scale("1")
     a = np.array(a)
 
@@ -718,7 +714,7 @@ def plot_points(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_spa
     show_colors = np.clip(show_colors, 0, 1)
 
     # Generate boundary hull
-    hull = get_boundary_hull(boundary=source_space, workspace=target_space)
+    hull = get_boundary_hull(boundary=source_space, workspace=target_space, hull_type=hull_type)
     if isinstance(hull, Delaunay):
         hull = trimesh.Trimesh(vertices=hull.points, faces=hull.convex_hull)
         hull.fix_normals()
@@ -808,7 +804,7 @@ def plot_color_palette(hex_colors, original, color_space='sRGB', title="Color Pa
 if __name__ == '__main__':
     ### Single function test.
     # print(100*auto_convert([0.95, 0.95, 0.95, 0], 'CMYK', 'CAM16UCS'))
-    get_boundary_hull(11, "sRGB", "CAM16UCS", hull_type='convex', show=True)
+    get_boundary_hull(11, "sRGB", "Oklab", hull_type='convex', show=True)
 
     ### Run the simulation.
     # single_run(9, [1, 1, 1], color_space='sRGB', quality='medium')

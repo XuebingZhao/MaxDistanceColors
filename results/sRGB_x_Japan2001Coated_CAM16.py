@@ -8,6 +8,7 @@ if __name__ == '__main__':
     for n in np.arange(2, 52, 1):
         csv_file = "sRGB_x_Japan2001Coated_CAM16.csv"
         hexs, de = multi_run(n, [1, 1, 1], color_space='CMYK', quality='medium', num_runs=32, show=False)
+        hexs = [f"'{h}'" for h in hexs]
         result.append([n, de, hexs])
 
         with open(csv_file, "w", newline='') as f:
