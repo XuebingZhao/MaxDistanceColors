@@ -256,9 +256,9 @@ def _o3d_build_bound(points, alpha=None):
     pcd.points = o3d.utility.Vector3dVector(points)
 
     # 自动计算alpha值
-    if alpha is None:
-        max_spacing = np.max(pcd.compute_nearest_neighbor_distance())
-        alpha = max_spacing * 2.0
+    max_spacing = np.max(pcd.compute_nearest_neighbor_distance())
+    if alpha is not None:
+        alpha = max(max_spacing * 1.5, alpha)
 
     # 生成Alpha Shape网格
     mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(pcd, alpha)
@@ -326,7 +326,7 @@ def in_bounds(p, bound_space='sRGB', workspace='CAM16LCD', bounds=None):
     return valid
 
 
-def _init(num, bound_func, seed=None, **kwargs):
+def _init_points(num, bound_func, seed=None, **kwargs):
     """
     Initialize a set of random points within the given boundary.
     :param num: Number of points to generate.
@@ -409,7 +409,7 @@ def _deal_out_of_bounds(s, v, dt, **kwargs):
 
         # Update the velocity of the out-of-bounds particles
         v_magnitudes = np.linalg.norm(v[out_of_bounds], axis=1)  # Their original speeds
-        v[out_of_bounds] = 0.99 * v_magnitudes[:, np.newaxis] * random_vectors  # New velocity vector
+        v[out_of_bounds] = 0.995 * v_magnitudes[:, np.newaxis] * random_vectors  # New velocity vector
 
     return s, v
 
@@ -475,7 +475,7 @@ def sa_arrange(p):
     iterations_per_temp = min(max(1, int(n/5)), 100)
 
     # Initialize the current permutation by greedy method
-    current_perm = arrange_points(p)
+    current_perm = p    # arrange_points(p)
     current_min_dist = _compute_min_distance(current_perm)
 
     best_perm = current_perm.copy()
@@ -549,7 +549,7 @@ def maximize_delta_e(
     p0[:, 0] *= KL
 
     # Initialize the positions and velocities of the colors points.
-    pos = _init(num - p0.shape[0], in_bounds, seed=seed, **bound_kwargs)
+    pos = _init_points(num - p0.shape[0], in_bounds, seed=seed, **bound_kwargs)
     if p0.shape[0] > 0:
         pos = np.vstack([p0, pos])
     vel = np.zeros_like(pos, dtype=np.float32)
@@ -604,7 +604,7 @@ def maximize_delta_e(
     dists = np.linalg.norm(best_pos - best_pos[0], axis=1)
     best_pos = best_pos[np.argsort(dists)]
     if MAX_ADJ_CONTRAST:
-        best_pos[1:] = arrange_points(best_pos[1:])
+        best_pos[0:] = sa_arrange(best_pos[0:])
 
     # Convert the colors back to the source space
     # For CMY space, convert back to sRGB
@@ -741,7 +741,9 @@ def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16
     # 可视化结果
     plot_points_and_line(points, times, dmin_list, "Time", r"Minimum $\Delta E$",
                          _color_space, uniform_space)
-    real_dmin = validate_result(points, _color_space, uniform_space)
+    real_dmin = validate_result(points, _color_space, uniform_space,
+                                # show=True,
+                                )
     plot_color_palette(hex_colors, points, color_space=color_space,
                        title=rf"{nums} {color_space} colors, $\Delta E_{{min}}={real_dmin:.1f}$ @ {uniform_space}")
 
@@ -790,7 +792,9 @@ def multi_run(nums, given_colors=None,
         if show:
             plot_points_and_line(best_points, np.arange(len(dmins)), dmins, "Runs", r"$\Delta E_{min}$",
                                  _color_space, uniform_space)
-            validate_result(best_points, _color_space, uniform_space)
+            validate_result(best_points, _color_space, uniform_space,
+                            # show=show,
+                            )
             plot_color_palette(
                 best_hexs, best_points, color_space=color_space,
                 title=rf"{nums} {color_space} colors, $\Delta E_{{min}}={best_dmin:.1f}$ @ {uniform_space}")
@@ -901,7 +905,7 @@ def plot_color_palette(hex_colors, original, color_space='sRGB', title="Color Pa
 if __name__ == '__main__':
     ### Single function test.
     # print(100*auto_convert([0.95, 0.95, 0.95, 0], 'CMYK', 'CAM16LCD'))
-    get_boundary_hull("sRGB", "CAM16LCD", 11, show=True)
+    get_boundary_hull("sRGB", "CIE Lab", 11, show=True)
 
     ### Run the simulation.
     # single_run(9, [1, 1, 1], color_space='sRGB', quality='medium')
