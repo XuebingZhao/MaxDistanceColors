@@ -9,7 +9,7 @@ single_run(9)
 # print(f"Colors: \n{colors}")
 
 # Constrained in CMYK space
-# single_run(16, color_space='CMYK')
+# single_run(9, color_space='CMYK')
 
 # Using DIN99d as Uniform-Color-Space
 # single_run(9, uniform_space='DIN99d')

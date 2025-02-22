@@ -286,18 +286,18 @@ def _o3d_contains(scene, points):
     return distances.numpy()[0] < 0
 
 
-def get_boundary_hull(res=11, boundary='sRGB', workspace='CAM16LCD', hull_type=None, show=False):
+def get_boundary_hull(bound_space='sRGB', workspace='CAM16LCD', res=11, hull_type=None, show=False):
     """
     Generate a Delaunay triangulation of the boundary of the given color space in the given workspace.
-    :param res: Grid resolution of each dimension.
-    :param boundary: Color space to generate the boundary.
+    :param bound_space: Color space to generate the boundary.
     :param workspace: Color space to project the boundary into.
+    :param res: Grid resolution of each dimension.
     :return: Delaunay triangulation of the boundary.
     :param hull_type: "convex" or "concave", if "concave", use alphashape to generate trimesh
     :param show: Whether to show the boundary.
     """
     x = np.linspace(0, 1, res)
-    if boundary in ['CMYK', 'CMY']:
+    if bound_space in ['CMYK', 'CMY']:
         k = np.linspace(0, 1, 5)
         p = np.array(np.meshgrid(*[x] * 3, k)).reshape(4, -1).T
         boundary_mask = np.any((p == 0) | (p == 1), axis=1)
@@ -305,11 +305,11 @@ def get_boundary_hull(res=11, boundary='sRGB', workspace='CAM16LCD', hull_type=N
     else:
         sp = np.array(np.meshgrid(*[x] * 3)).reshape(3, -1).T
 
-    table = auto_convert(sp, boundary, workspace)
+    table = auto_convert(sp, bound_space, workspace)
     table = remove_duplicate_points(table, threshold=0.001)
     # validate_result(table, workspace, workspace, show=True)
-    if boundary in ['CMYK', 'CMY']:
-        table = auto_convert(auto_convert(table, workspace, boundary), boundary, workspace)
+    if bound_space in ['CMYK', 'CMY']:
+        table = auto_convert(auto_convert(table, workspace, bound_space), bound_space, workspace)
 
     table[:, 0] *= KL
 
@@ -463,7 +463,7 @@ def maximize_delta_e(
 
     # Transform input color space bounds to uniform bounds
     hull_type = kwargs.get('hull_type', None)
-    bounds = get_boundary_hull(boundary=source, workspace=uniform, hull_type=hull_type)
+    bounds = kwargs.get('bounds', get_boundary_hull(source, workspace=uniform, hull_type=hull_type))
     # hull = None
 
     # kwargs for in_bounds function
@@ -567,7 +567,7 @@ def _swap_labels_and_coords(labels, coords):
     return labels, coords
 
 
-def _setup_3d_axes(ax, labels):
+def _setup_3d_axes(ax: plt.Axes, labels):
     """
     Set up the properties of a 3D axes using the current xlim and ylim from ax.
     """
@@ -600,7 +600,7 @@ def validate_result(points, source_space, target_space, hull=None, show=False):
 
         # Generate boundary hull
         if hull is None:
-            hull = get_boundary_hull(boundary=source_space, workspace=target_space)[0]
+            hull = get_boundary_hull(source_space, workspace=target_space)[0]
         if isinstance(hull, Delaunay):
             hull = trimesh.Trimesh(vertices=hull.points, faces=hull.convex_hull)
             hull.fix_normals()
@@ -683,7 +683,7 @@ def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16
 
 
 def multi_run(nums, given_colors=None,
-              color_space='sRGB', unifrom_space='CAM16LCD', quality="fast", num_runs=20, show=True, **kwargs):
+              color_space='sRGB', uniform_space='CAM16LCD', quality="fast", num_runs=20, show=True, **kwargs):
     _color_space = color_space
     if color_space in ["CMYK", "CMY"] and not CMYK_PARAMS['output_cmyk']:
         _color_space = "sRGB"
@@ -694,17 +694,19 @@ def multi_run(nums, given_colors=None,
     best_points = None
     best_hexs = None
     best_dmin = None
+    bounds = get_boundary_hull(color_space, workspace=uniform_space, hull_type=kwargs.get('hull_type', None))
+    kwargs.update({'bounds': bounds})
 
-    with ProcessPoolExecutor(max_workers=2) as executor:
+    with ProcessPoolExecutor(max_workers=None) as executor:
         futures = {
             executor.submit(
-                run, nums, given_colors, color_space, unifrom_space, quality, seed=i, **kwargs
+                run, nums, given_colors, color_space, uniform_space, quality, seed=i, **kwargs
             ): i for i in range(num_runs)
         }
         for future in as_completed(futures):
             i = futures[future]
             hex_colors, dmin, points, _, _ = future.result()
-            dmin = validate_result(points, _color_space, unifrom_space, show=False)
+            dmin = validate_result(points, _color_space, uniform_space, show=False)
             print(f"Run {i + 1}/{num_runs} completed with ΔE: {dmin:.2f}")
             if dmin > np.max(dmins):
                 best_points = points
@@ -721,11 +723,11 @@ def multi_run(nums, given_colors=None,
     if best_points is not None:
         if show:
             plot_points_and_line(best_points, np.arange(len(dmins)), dmins, "Runs", r"$\Delta E_{min}$",
-                                 _color_space, unifrom_space, hull_type=kwargs.get('hull_type', None))
-            validate_result(best_points, _color_space, unifrom_space)
+                                 _color_space, uniform_space, hull_type=kwargs.get('hull_type', None))
+            validate_result(best_points, _color_space, uniform_space)
             plot_color_palette(
                 best_hexs, best_points, color_space=color_space,
-                title=rf"{nums} {color_space} colors, $\Delta E_{{min}}={best_dmin:.1f}$ @ {unifrom_space}")
+                title=rf"{nums} {color_space} colors, $\Delta E_{{min}}={best_dmin:.1f}$ @ {uniform_space}")
 
         print(f"First 20 generated points in HEX format:\n{best_hexs[:20]}\n")
 
@@ -745,7 +747,7 @@ def plot_points_and_line(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', t
     show_colors = np.clip(show_colors, 0, 1)
 
     # Generate boundary hull
-    hull = get_boundary_hull(boundary=source_space, workspace=target_space, hull_type=hull_type)[0]
+    hull = get_boundary_hull(source_space, workspace=target_space, hull_type=hull_type)[0]
     if isinstance(hull, Delaunay):
         hull = trimesh.Trimesh(vertices=hull.points, faces=hull.convex_hull)
         hull.fix_normals()
@@ -836,7 +838,7 @@ def plot_color_palette(hex_colors, original, color_space='sRGB', title="Color Pa
 if __name__ == '__main__':
     ### Single function test.
     # print(100*auto_convert([0.95, 0.95, 0.95, 0], 'CMYK', 'CAM16LCD'))
-    get_boundary_hull(11, "sRGB", "CAM16LCD", hull_type='convex', show=True)
+    get_boundary_hull("sRGB", "CAM16LCD", 11, hull_type='convex', show=True)
 
     ### Run the simulation.
     # single_run(9, [1, 1, 1], color_space='sRGB', quality='medium')
