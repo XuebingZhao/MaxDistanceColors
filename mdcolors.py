@@ -18,6 +18,8 @@ import open3d as o3d
 
 # Resize factor for brightness
 KL = 1.0
+# Maximize contrast between adjacent colors in the output list
+MAX_ADJ_CONTRAST = True
 # Set Parameters for converting to/from CMYK icc profiles
 cdir = os.path.dirname(os.path.abspath(__file__))
 CMYK_PARAMS = {
@@ -437,6 +439,99 @@ def _deal_out_of_bounds(s, v, dt, **kwargs):
     return s, v
 
 
+def arrange_points(p):
+    """
+    Fast arrange points by Greedy Method
+    :param p: point list
+    :return: np.array of arranged points
+    """
+    p_c = p.copy()
+    if len(p_c) == 0:
+        return p_c
+    path = [p_c[0]]
+    remaining = p_c[1:]
+
+    if remaining.size == 0:
+        return np.array(path)
+
+    distances = np.linalg.norm(remaining - path[0], axis=1)
+    idx = np.argmax(distances)
+    path.append(remaining[idx])
+    remaining = np.delete(remaining, idx, axis=0)
+    while remaining.shape[0] > 0:
+        left = path[0]
+        right = path[-1]
+
+        d_left = np.linalg.norm(remaining - left, axis=1)
+        d_right = np.linalg.norm(remaining - right, axis=1)
+        max_d = np.maximum(d_left, d_right)
+        idx = np.argmax(max_d)
+
+        if d_left[idx] > d_right[idx]:
+            path.insert(0, remaining[idx])
+        else:
+            path.append(remaining[idx])
+        remaining = np.delete(remaining, idx, axis=0)
+
+    return np.array(path)
+
+
+def _compute_min_distance(perm):
+    """Calculate the minimum distance between adjacent points in the arrangement"""
+    if len(perm) < 2:
+        return 0
+    distances = np.linalg.norm(np.diff(perm, axis=0), axis=1)
+    return np.min(distances)
+
+
+def sa_arrange(p):
+    """
+    Arrange points using Simulated Annealing algorithm
+    :param p: point list
+    :return: np.array of arranged points
+    """
+    n = p.shape[0]
+    if n <= 1:
+        return p.copy()
+
+    initial_temp = 1
+    cooling_rate = 0.99
+    min_temp = 1e-2/(n**2)
+    iterations_per_temp = min(max(1, int(n/5)), 100)
+
+    # Initialize the current permutation by greedy method
+    current_perm = arrange_points(p)
+    current_min_dist = _compute_min_distance(current_perm)
+
+    best_perm = current_perm.copy()
+    best_min_dist = current_min_dist
+
+    temp = initial_temp
+    while temp > min_temp:
+        for _ in range(iterations_per_temp):
+            # Generate a new solution: randomly swap the positions of two non-initial points
+            i, j = np.random.choice(range(1, n), size=2, replace=False)  # Keep the first point at the beginning
+            new_perm = current_perm.copy()
+            new_perm[[i, j]] = new_perm[[j, i]]
+
+            new_min_dist = _compute_min_distance(new_perm)
+
+            # Metropolis criterion
+            delta = current_min_dist - new_min_dist
+            if delta < 0 or np.exp(-delta / temp) > np.random.rand():
+                current_perm = new_perm
+                current_min_dist = new_min_dist
+
+                if current_min_dist > best_min_dist:
+                    best_perm = current_perm.copy()
+                    best_min_dist = current_min_dist
+
+        # Cool down temperature
+        temp *= cooling_rate
+
+    return best_perm
+
+
 def maximize_delta_e(
         num, p0=None, source='sRGB', uniform='CAM16LCD',
         dt=1E-4, t_end=1000, t_tol=1E-4, steps=1000, skip=10, damping=0.99,
@@ -532,9 +627,11 @@ def maximize_delta_e(
         pos = new_pos
         vel = new_vel
 
-    # Reorder the points by distance from the first point
+    # Rearrange the points by distance from the first point
     dists = np.linalg.norm(best_pos - best_pos[0], axis=1)
     best_pos = best_pos[np.argsort(dists)]
+    if MAX_ADJ_CONTRAST:
+        best_pos[1:] = arrange_points(best_pos[1:])
 
     # Convert the colors back to the source space
     # For CMY space, convert back to sRGB
@@ -802,7 +899,7 @@ def plot_color_palette(hex_colors, original, color_space='sRGB', title="Color Pa
     else:
         simple_annotation = False
 
-    # 计算合适的行数和列数
+    # Calculate the number of rows and columns
     cols = int(n_colors ** 0.5) * 1
     rows = (n_colors + cols - 1) // cols
 
