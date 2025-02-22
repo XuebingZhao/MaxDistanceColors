@@ -66,7 +66,7 @@ single_run(9, color_space='CMYK')
 <img src="example/color_patch_CMYK.png" width="500"/>
 </p>
 
->注：由于CMYK与RGB之间的转化不是唯一对应的，RGB转换回CMYK之后的色彩会有一定差异，因此生成的颜色之间的色差均匀性会差于RGB色彩。使用凹包而不是凸包来对边界建模，可能对均匀性有一定提升，但程序速度会更慢，通常没有这个必要。如有需要，增加一项参数`'hull_type'='concave'`
+>注：由于CMYK与RGB之间的转化不是唯一对应的，RGB转换回CMYK之后的色彩会有一定差异，因此生成的颜色之间的色差均匀性会差于RGB色彩。
 
 #### 3.2.2. 使用其他的均匀色彩空间，比如DIN99d，Oklab等
 
@@ -77,10 +77,6 @@ single_run(9, uniform_space='DIN99d')
 ```
 <p align="center">
 <img src="example/color_patch_sRGB_in_DIN99d.png" width="500"/>
-</p>
-
->注：使用 Oklab 或 CIELab 作为均匀色彩空间时，RGB色域在其中的边界一般是非凸的，本项目默认借助Delaunay三角剖分来加速判断色域内外在此时会导致较大误差，此时可在参数中增加`'hull_type'='concave'`来获取更准确结果。
-<p align="center">
 <img src="example/color_patch_sRGB_in_Oklab.png" width="500"/>
 <img src="example/color_patch_sRGB_in_CIELab.png" width="500"/>
 </p>

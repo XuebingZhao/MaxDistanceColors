@@ -66,7 +66,7 @@ single_run(9, color_space='CMYK')
 <img src="example/color_patch_CMYK.png" width="500"/>
 </p>
 
->Note: Since the conversion between CMYK and RGB is not uniquely corresponding, the colors converted back to CMYK will have some differences, so the color difference uniformity of the generated colors will be worse than RGB colors. Using a concave hull instead of a convex hull to model the boundary may improve uniformity, but the program speed will be slower, which is usually not necessary. If needed, add `hull_type='concave'` in the parameter.
+>Note: Since the conversion between CMYK and RGB is not uniquely corresponding, the colors converted back to CMYK will have some differences, so the color difference uniformity of the generated colors will be worse than RGB colors. 
 
 #### 3.2.2. Use Other Uniform Color Spaces, Such as DIN99d, Oklab, etc.
 
@@ -77,10 +77,6 @@ single_run(9, uniform_space='DIN99d')
 ```
 <p align="center">
 <img src="example/color_patch_sRGB_in_DIN99d.png" width="500"/>
-</p>
-
->Note: When using Oklab or CIELab as a uniform color space, the boundaries of the RGB color gamut are generally non-convex, and this project uses Delaunay triangulation to accelerate the judgment of the inside and outside of the color gamut by default, which will lead to a large error, at this time, you can add `hull_type='concave'` in the parameter to obtain more accurate results.
-<p align="center">
 <img src="example/color_patch_sRGB_in_Oklab.png" width="500"/>
 <img src="example/color_patch_sRGB_in_CIELab.png" width="500"/>
 </p>

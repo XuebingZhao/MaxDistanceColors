@@ -6,13 +6,11 @@ from time import perf_counter as timer
 from PIL import Image, ImageCms
 
 import numpy as np
-from scipy.spatial import cKDTree, Delaunay
+from scipy.spatial import cKDTree
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import colour
-import alphashape
-import trimesh
 import open3d as o3d
 
 
@@ -194,15 +192,11 @@ def auto_convert(a, source='sRGB', target='CIE XYZ'):
         return a
 
     if source in ['CMYK', 'CMY']:
-        original_shape = a.shape if isinstance(a, np.ndarray) else np.array(a).shape
-        is_1d = len(original_shape) == 1
         a = np.atleast_2d(a)
         if a.shape[1] == 3:
             a = np.column_stack((a, np.zeros((a.shape[0], 1))))
-        elif a.shape == (3, 1):
-            a = np.vstack((a, [0]))
         rgb = cmyk_to_rgb(a)
-        if is_1d:
+        if len(np.array(a).shape) == 1:
             rgb = rgb.flatten()
         return auto_convert(rgb, CMYK_PARAMS['intermediate_space'], target)
 
@@ -244,53 +238,51 @@ def auto_convert(a, source='sRGB', target='CIE XYZ'):
     return colour.convert(a, source, target)
 
 
-def remove_duplicate_points(table, threshold=0.0001):
-    if len(table) == 0:
-        return table.copy()
-
-    # 构建KD树以高效查询邻近点
-    tree = cKDTree(table)
-    # 查询每个点在阈值内的所有邻近点（包括自身）
-    neighbors_list = tree.query_ball_tree(tree, r=threshold, p=2)
-
-    n = table.shape[0]
-    keep_mask = np.ones(n, dtype=bool)  # 初始标记所有点为保留
-
-    for i in range(n):
-        if keep_mask[i]:
-            # 获取当前点的所有邻近点索引
-            neighbors = neighbors_list[i]
-            # 标记这些邻近点为不保留（后续会被跳过）
-            keep_mask[neighbors] = False
-            # 重新标记当前点为保留（确保至少保留一个）
-            keep_mask[i] = True
-
-    return table[keep_mask]
-
-
-def _trimesh_to_o3d(mesh):
-    vertices = o3d.core.Tensor(mesh.vertices, dtype=o3d.core.float32)
-    triangles = o3d.core.Tensor(mesh.faces.astype(np.uint32), dtype=o3d.core.uint32)
-    scene = o3d.t.geometry.RaycastingScene()
-    _ = scene.add_triangles(vertices, triangles)
-
-    return scene
-
-
 def _o3d_contains(scene, points):
     t = o3d.core.Tensor([points], dtype=o3d.core.float32)
     distances = scene.compute_signed_distance(t)
     return distances.numpy()[0] < 0
 
 
-def get_boundary_hull(bound_space='sRGB', workspace='CAM16LCD', res=11, hull_type=None, show=False):
+def _o3d_build_bound(points, alpha=None):
+    """
+    使用Open3D的Alpha Shapes生成曲面并转换为trimesh对象
+    :param points: (n,3) numpy数组，输入点云
+    :param alpha: 可选，Alpha值（自动计算时设为None）
+    :return: (trimesh.Trimesh, o3d.t.geometry.RaycastingScene)
+    """
+    # 转换为Open3D点云
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points)
+
+    # 自动计算alpha值
+    if alpha is None:
+        max_spacing = np.max(pcd.compute_nearest_neighbor_distance())
+        alpha = max_spacing * 2.0
+
+    # 生成Alpha Shape网格
+    mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(pcd, alpha)
+    # 清理三角形
+    mesh.compute_vertex_normals()
+    mesh.remove_duplicated_triangles()
+    mesh.remove_degenerate_triangles()
+    mesh.remove_non_manifold_edges()
+
+    # 创建Open3D射线投射场景
+    scene = o3d.t.geometry.RaycastingScene()
+    mesh_t = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
+    scene.add_triangles(mesh_t)
+
+    return mesh, scene
+
+
+def get_boundary_hull(bound_space='sRGB', workspace='CAM16LCD', res=11, show=False):
     """
     Generate a Delaunay triangulation of the boundary of the given color space in the given workspace.
     :param bound_space: Color space to generate the boundary.
     :param workspace: Color space to project the boundary into.
     :param res: Grid resolution of each dimension.
     :return: Delaunay triangulation of the boundary.
-    :param hull_type: "convex" or "concave", if "concave", use alphashape to generate trimesh
     :param show: Whether to show the boundary.
     """
     x = np.linspace(0, 1, res)
@@ -303,25 +295,17 @@ def get_boundary_hull(bound_space='sRGB', workspace='CAM16LCD', res=11, hull_typ
         sp = np.array(np.meshgrid(*[x] * 3)).reshape(3, -1).T
 
     table = auto_convert(sp, bound_space, workspace)
-    table = remove_duplicate_points(table, threshold=0.001)
     # validate_result(table, workspace, workspace, show=True)
     if bound_space in ['CMYK', 'CMY']:
         table = auto_convert(auto_convert(table, workspace, bound_space), bound_space, workspace)
-
     table[:, 0] *= KL
 
-    if hull_type is not None and hull_type != 'convex':
-        hull = alphashape.alphashape(table, alpha=res / 1.5)
-        scene = _trimesh_to_o3d(hull)
-        result = [hull, scene]
-    else:
-        hull = Delaunay(table)
-        result = [hull]
+    hull, scene = _o3d_build_bound(table, 1.5/res)
 
     if show:
         validate_result(table, workspace, workspace, hull, show=True)
 
-    return result
+    return hull, scene
 
 
 def in_bounds(p, bound_space='sRGB', workspace='CAM16LCD', bounds=None):
@@ -330,18 +314,14 @@ def in_bounds(p, bound_space='sRGB', workspace='CAM16LCD', bounds=None):
     :param p: Coordinate of the given point.
     :param bound_space: Given color space.
     :param workspace: Working color space.
-    :param bounds: [Optional] Trimesh or Delaunay of the boundary. If not provided, use converted colors to determine.
+    :param bounds: [Optional] Open3D mesh of the boundary. If not provided, use converted colors to determine.
     :return: Boolean indicating whether the point is within the boundary.
     """
     if bounds is None:
         s = auto_convert(p, workspace, bound_space)
         valid = np.all((s >= 0) & (s <= 1), axis=-1)
-    elif isinstance(bounds[0], Delaunay):
-        valid = bounds[0].find_simplex(p) >= 0
-    elif isinstance(bounds[1], o3d.t.geometry.RaycastingScene):
-        valid = _o3d_contains(bounds[1], p)
     else:
-        valid = bounds[0].contains(p)
+        valid = _o3d_contains(bounds, p)
 
     return valid
 
@@ -536,7 +516,7 @@ def maximize_delta_e(
     :param num: Number of particles to simulate.
     :param p0: Given initial colors. (N, 3)
     :param source: Input color space. Support color spaces that all componets are in range [0, 1],
-     including all RGB spaces, and CMY space.
+                   including all RGB spaces, and CMY space.
     :param uniform: Working color space. Must be a perceptually uniform space, such as CAM16-UCS.
     :param dt: Initial timestep.
     :param t_end: End time.
@@ -552,9 +532,7 @@ def maximize_delta_e(
                          f"Please use a uniform space in:\n {UCS_SPACES}")
 
     # Transform input color space bounds to uniform bounds
-    hull_type = kwargs.get('hull_type', None)
-    bounds = kwargs.get('bounds', get_boundary_hull(source, workspace=uniform, hull_type=hull_type))
-    # hull = None
+    _, bounds = kwargs.get('bounds', get_boundary_hull(source, workspace=uniform))
 
     # kwargs for in_bounds function
     bound_kwargs = {'bound_space': source, 'workspace': uniform, 'bounds': bounds}
@@ -692,12 +670,10 @@ def validate_result(points, source_space, target_space, hull=None, show=False):
 
         # Generate boundary hull
         if hull is None:
-            hull = get_boundary_hull(source_space, workspace=target_space)[0]
-        if isinstance(hull, Delaunay):
-            hull = trimesh.Trimesh(vertices=hull.points, faces=hull.convex_hull)
-            hull.fix_normals()
-        points = np.array(hull.vertices)
-        triangles = hull.faces
+            hull, _ = get_boundary_hull(source_space, workspace=target_space)
+        points = np.asarray(hull.vertices, dtype=np.float32)
+        points[:, 0] /= KL
+        triangles = np.asarray(hull.triangles, dtype=np.int32)
 
         # Adjust the order of labels and axis
         labels, [pos, points] = _swap_labels_and_coords(labels, [pos, points])
@@ -764,7 +740,7 @@ def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16
 
     # 可视化结果
     plot_points_and_line(points, times, dmin_list, "Time", r"Minimum $\Delta E$",
-                         _color_space, uniform_space, hull_type=kwargs.get('hull_type', None))
+                         _color_space, uniform_space)
     real_dmin = validate_result(points, _color_space, uniform_space)
     plot_color_palette(hex_colors, points, color_space=color_space,
                        title=rf"{nums} {color_space} colors, $\Delta E_{{min}}={real_dmin:.1f}$ @ {uniform_space}")
@@ -813,7 +789,7 @@ def multi_run(nums, given_colors=None,
     if best_points is not None:
         if show:
             plot_points_and_line(best_points, np.arange(len(dmins)), dmins, "Runs", r"$\Delta E_{min}$",
-                                 _color_space, uniform_space, hull_type=kwargs.get('hull_type', None))
+                                 _color_space, uniform_space)
             validate_result(best_points, _color_space, uniform_space)
             plot_color_palette(
                 best_hexs, best_points, color_space=color_space,
@@ -824,7 +800,7 @@ def multi_run(nums, given_colors=None,
     return best_hexs, best_dmin
 
 
-def plot_points_and_line(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_space='CIE xyY', hull_type=None):
+def plot_points_and_line(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_space='CIE xyY'):
     colour.set_domain_range_scale("1")
     a = np.array(a)
 
@@ -837,13 +813,10 @@ def plot_points_and_line(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', t
     show_colors = np.clip(show_colors, 0, 1)
 
     # Generate boundary hull
-    hull = get_boundary_hull(source_space, workspace=target_space, hull_type=hull_type)[0]
-    if isinstance(hull, Delaunay):
-        hull = trimesh.Trimesh(vertices=hull.points, faces=hull.convex_hull)
-        hull.fix_normals()
-    points = np.array(hull.vertices)
+    hull, _ = get_boundary_hull(source_space, workspace=target_space)
+    points = np.asarray(hull.vertices, dtype=np.float32)
     points[:, 0] /= KL
-    triangles = hull.faces
+    triangles = np.asarray(hull.triangles, dtype=np.int32)
 
     # Adjust the order of labels and axis
     labels, [colors, points] = _swap_labels_and_coords(labels, [colors, points])
@@ -928,7 +901,7 @@ def plot_color_palette(hex_colors, original, color_space='sRGB', title="Color Pa
 if __name__ == '__main__':
     ### Single function test.
     # print(100*auto_convert([0.95, 0.95, 0.95, 0], 'CMYK', 'CAM16LCD'))
-    get_boundary_hull("sRGB", "CAM16LCD", 11, hull_type='convex', show=True)
+    get_boundary_hull("sRGB", "CAM16LCD", 11, show=True)
 
     ### Run the simulation.
     # single_run(9, [1, 1, 1], color_space='sRGB', quality='medium')
