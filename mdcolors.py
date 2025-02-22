@@ -13,6 +13,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import colour
 import alphashape
 import trimesh
+import open3d as o3d
 
 
 # Resize factor for brightness
@@ -270,6 +271,21 @@ def remove_duplicate_points(table, threshold=0.0001):
     return table[keep_mask]
 
 
+def _trimesh_to_o3d(mesh):
+    vertices = o3d.core.Tensor(mesh.vertices, dtype=o3d.core.float32)
+    triangles = o3d.core.Tensor(mesh.faces.astype(np.uint32), dtype=o3d.core.uint32)
+    scene = o3d.t.geometry.RaycastingScene()
+    _ = scene.add_triangles(vertices, triangles)
+
+    return scene
+
+
+def _o3d_contains(scene, points):
+    t = o3d.core.Tensor([points], dtype=o3d.core.float32)
+    distances = scene.compute_signed_distance(t)
+    return distances.numpy()[0] < 0
+
+
 def get_boundary_hull(res=11, boundary='sRGB', workspace='CAM16LCD', hull_type=None, show=False):
     """
     Generate a Delaunay triangulation of the boundary of the given color space in the given workspace.
@@ -299,36 +315,41 @@ def get_boundary_hull(res=11, boundary='sRGB', workspace='CAM16LCD', hull_type=N
 
     if hull_type is not None and hull_type != 'convex':
         hull = alphashape.alphashape(table, alpha=res / 1.5)
+        scene = _trimesh_to_o3d(hull)
+        result = [hull, scene]
     else:
         hull = Delaunay(table)
+        result = [hull]
 
     if show:
         validate_result(table, workspace, workspace, hull, show=True)
 
-    return hull
+    return result
 
 
-def in_bounds(p, boundary='sRGB', workspace='CAM16LCD', hull=None):
+def in_bounds(p, bound_space='sRGB', workspace='CAM16LCD', bounds=None):
     """
     Determine whether a point is within the boundary of the given color space in the given workspace.
     :param p: Coordinate of the given point.
-    :param boundary: Given color space.
+    :param bound_space: Given color space.
     :param workspace: Working color space.
-    :param hull: [Optional] Trimesh or Delaunay of the boundary. If not provided, use converted colors to determine.
+    :param bounds: [Optional] Trimesh or Delaunay of the boundary. If not provided, use converted colors to determine.
     :return: Boolean indicating whether the point is within the boundary.
     """
-    if hull is None:
-        s = auto_convert(p, workspace, boundary)
+    if bounds is None:
+        s = auto_convert(p, workspace, bound_space)
         valid = np.all((s >= 0) & (s <= 1), axis=-1)
-    elif isinstance(hull, Delaunay):
-        valid = hull.find_simplex(p) >= 0
+    elif isinstance(bounds[0], Delaunay):
+        valid = bounds[0].find_simplex(p) >= 0
+    elif isinstance(bounds[1], o3d.t.geometry.RaycastingScene):
+        valid = _o3d_contains(bounds[1], p)
     else:
-        valid = hull.contains(p)
+        valid = bounds[0].contains(p)
 
     return valid
 
 
-def init(num, bound_func, seed=None, **kwargs):
+def _init(num, bound_func, seed=None, **kwargs):
     """
     Initialize a set of random points within the given boundary.
     :param num: Number of points to generate.
@@ -351,7 +372,7 @@ def init(num, bound_func, seed=None, **kwargs):
     return points[:num]
 
 
-def compute_forces(pos, tree, kf=2):
+def _compute_forces(pos, tree, kf=2):
     """
     Compute the forces acting on each particle based on its proximity to its k-nearest neighbors.
     :param pos: Positions of all particles. (N, 3)
@@ -373,7 +394,7 @@ def compute_forces(pos, tree, kf=2):
     return forces
 
 
-def update_positions(s, v, a, dt, damping=0.99):
+def _update_positions(s, v, a, dt, damping=0.99):
     """
     Update the positions and velocities of the particles.
     :param s: Positions of all particles. (N, 3)
@@ -388,7 +409,7 @@ def update_positions(s, v, a, dt, damping=0.99):
     return s, v
 
 
-def deal_out_of_bounds(s, v, dt, **kwargs):
+def _deal_out_of_bounds(s, v, dt, **kwargs):
     """
     Deal with particles that are out of bounds.
     :param s: Positions of all particles. (N, 3)
@@ -442,11 +463,11 @@ def maximize_delta_e(
 
     # Transform input color space bounds to uniform bounds
     hull_type = kwargs.get('hull_type', None)
-    hull = get_boundary_hull(boundary=source, workspace=uniform, hull_type=hull_type)
+    bounds = get_boundary_hull(boundary=source, workspace=uniform, hull_type=hull_type)
     # hull = None
 
     # kwargs for in_bounds function
-    bound_kwargs = {'boundary': source, 'workspace': uniform, 'hull': hull}
+    bound_kwargs = {'bound_space': source, 'workspace': uniform, 'bounds': bounds}
 
     # Deal with given initial points
     if p0 is None:
@@ -460,7 +481,7 @@ def maximize_delta_e(
     p0[:, 0] *= KL
 
     # Initialize the positions and velocities of the colors points.
-    pos = init(num - p0.shape[0], in_bounds, seed=seed, **bound_kwargs)
+    pos = _init(num - p0.shape[0], in_bounds, seed=seed, **bound_kwargs)
     if p0.shape[0] > 0:
         pos = np.vstack([p0, pos])
     vel = np.zeros_like(pos, dtype=np.float32)
@@ -479,10 +500,10 @@ def maximize_delta_e(
     for i in range(steps):
         if time >= t_end:
             break
-        forces = compute_forces(pos, tree)
+        forces = _compute_forces(pos, tree)
         forces[:num_fixed] = 0  # Fixed particles don't move
-        new_pos, new_vel = update_positions(pos, vel, forces, step, damping=damping)
-        new_pos, new_vel = deal_out_of_bounds(new_pos, new_vel, step, **bound_kwargs)
+        new_pos, new_vel = _update_positions(pos, vel, forces, step, damping=damping)
+        new_pos, new_vel = _deal_out_of_bounds(new_pos, new_vel, step, **bound_kwargs)
 
         if i % skip == 0:
             # Update the KDTree
@@ -579,7 +600,7 @@ def validate_result(points, source_space, target_space, hull=None, show=False):
 
         # Generate boundary hull
         if hull is None:
-            hull = get_boundary_hull(boundary=source_space, workspace=target_space)
+            hull = get_boundary_hull(boundary=source_space, workspace=target_space)[0]
         if isinstance(hull, Delaunay):
             hull = trimesh.Trimesh(vertices=hull.points, faces=hull.convex_hull)
             hull.fix_normals()
@@ -611,7 +632,7 @@ def validate_result(points, source_space, target_space, hull=None, show=False):
         fig.tight_layout()
         plt.show()
 
-    return de_min * 100
+    return de_min * 100.0
 
 
 def run(nums, given_colors, color_space='sRGB', uniform_space='CAM16LCD', quality='medium', seed=None, **kwargs):
@@ -724,7 +745,7 @@ def plot_points_and_line(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', t
     show_colors = np.clip(show_colors, 0, 1)
 
     # Generate boundary hull
-    hull = get_boundary_hull(boundary=source_space, workspace=target_space, hull_type=hull_type)
+    hull = get_boundary_hull(boundary=source_space, workspace=target_space, hull_type=hull_type)[0]
     if isinstance(hull, Delaunay):
         hull = trimesh.Trimesh(vertices=hull.points, faces=hull.convex_hull)
         hull.fix_normals()
@@ -815,7 +836,7 @@ def plot_color_palette(hex_colors, original, color_space='sRGB', title="Color Pa
 if __name__ == '__main__':
     ### Single function test.
     # print(100*auto_convert([0.95, 0.95, 0.95, 0], 'CMYK', 'CAM16LCD'))
-    get_boundary_hull(11, "sRGB", "Oklab", hull_type='convex', show=True)
+    get_boundary_hull(11, "sRGB", "CAM16LCD", hull_type='convex', show=True)
 
     ### Run the simulation.
     # single_run(9, [1, 1, 1], color_space='sRGB', quality='medium')

@@ -4,14 +4,18 @@ from mdcolors import single_run
 single_run(9)
 
 # More colors
-# single_run(100)
+# colors, de = single_run(100)
+# print(f"ΔE_min: {de}")
+# print(f"Colors: \n{colors}")
 
 # Constrained in CMYK space
-# single_run(9, color_space='CMYK')
+# single_run(16, color_space='CMYK')
 
 # Using DIN99d as Uniform-Color-Space
 # single_run(9, uniform_space='DIN99d')
-# single_run(9, uniform_space='Oklab', hull_type='concave')  # Use concave hull for better results, but much slower
+
+# Using Oklab as Uniform-Color-Space. Use concave hull for better results, but slower
+# single_run(9, uniform_space='Oklab', hull_type='concave')
 
 # Spend more time on higher quality, 'fast'->'medium'->'slow'
 # single_run(9, quality='medium')

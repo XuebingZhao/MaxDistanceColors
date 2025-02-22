@@ -46,6 +46,15 @@ single_run(9)
 <img src="example/color_patch_sRGB.png" width="500"/>
 </p>
 
+#### 3.1.3. 生成更多色彩
+```python
+from mdcolors import single_run
+
+colors, de = single_run(100)
+print(f"ΔE_min: {de}")
+print(f"Colors: \n{colors}")
+```
+
 ### 3.2. 进阶使用
 #### 3.2.1. 限制颜色到CMYK空间中，针对印刷制品上的视觉差异选取颜色
 ```python
@@ -57,7 +66,7 @@ single_run(9, color_space='CMYK')
 <img src="example/color_patch_CMYK.png" width="500"/>
 </p>
 
->注：由于CMYK与RGB之间的转化不是唯一对应的，RGB转换回CMYK之后的色彩会有一定差异，因此生成的颜色之间的色差均匀性会差于RGB色彩。使用凹包而不是凸包来对边界建模，可能对均匀性有一定提升，但程序速度会慢5倍以上，通常没有这个必要。如有需要，增加一项参数`'hull_type'='concave'`
+>注：由于CMYK与RGB之间的转化不是唯一对应的，RGB转换回CMYK之后的色彩会有一定差异，因此生成的颜色之间的色差均匀性会差于RGB色彩。使用凹包而不是凸包来对边界建模，可能对均匀性有一定提升，但程序速度会更慢，通常没有这个必要。如有需要，增加一项参数`'hull_type'='concave'`
 
 #### 3.2.2. 使用其他的均匀色彩空间，比如DIN99d，Oklab等
 

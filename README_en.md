@@ -46,6 +46,15 @@ Below is a visualization of the generated colors and their Hex and RGB represent
 <img src="example/color_patch_sRGB.png" width="500"/>
 </p>
 
+#### 3.1.3. Output More Colors
+```python
+from mdcolors import single_run
+
+colors, de = single_run(100)
+print(f"ΔE_min: {de}")
+print(f"Colors: \n{colors}")
+```
+
 ### 3.2. Advanced Usage
 #### 3.2.1. Restrict Colors to the CMYK Space, Select Colors for Visual Differences in Printed Materials
 ```python
@@ -57,7 +66,7 @@ single_run(9, color_space='CMYK')
 <img src="example/color_patch_CMYK.png" width="500"/>
 </p>
 
->Note: Since the conversion between CMYK and RGB is not uniquely corresponding, the colors converted back to CMYK will have some differences, so the color difference uniformity of the generated colors will be worse than RGB colors. Using a concave hull instead of a convex hull to model the boundary may improve uniformity, but the program speed will be more than 5 times slower, which is usually not necessary. If needed, add `hull_type='concave'` in the parameter.
+>Note: Since the conversion between CMYK and RGB is not uniquely corresponding, the colors converted back to CMYK will have some differences, so the color difference uniformity of the generated colors will be worse than RGB colors. Using a concave hull instead of a convex hull to model the boundary may improve uniformity, but the program speed will be slower, which is usually not necessary. If needed, add `hull_type='concave'` in the parameter.
 
 #### 3.2.2. Use Other Uniform Color Spaces, Such as DIN99d, Oklab, etc.
 
