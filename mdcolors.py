@@ -694,8 +694,8 @@ def multi_run(nums, given_colors=None,
     best_points = None
     best_hexs = None
     best_dmin = None
-    bounds = get_boundary_hull(color_space, workspace=uniform_space, hull_type=kwargs.get('hull_type', None))
-    kwargs.update({'bounds': bounds})
+    # bounds = get_boundary_hull(color_space, workspace=uniform_space, hull_type=kwargs.get('hull_type', None))
+    # kwargs.update({'bounds': bounds})
 
     with ProcessPoolExecutor(max_workers=None) as executor:
         futures = {
