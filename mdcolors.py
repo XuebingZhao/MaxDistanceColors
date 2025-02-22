@@ -119,30 +119,35 @@ SIM_PARAMS = {
     },
 }
 
+CMYK_TO_RGB_TRANSFROM = ImageCms.buildTransformFromOpenProfiles(
+    ImageCms.getOpenProfile(CMYK_PARAMS['cmyk_icc']),
+    ImageCms.getOpenProfile(CMYK_PARAMS['rgb_icc']),
+    inMode='CMYK', outMode='RGB',
+    renderingIntent=CMYK_PARAMS['renderingIntent'],
+    flags=CMYK_PARAMS['flags']
+)
+RGB_TO_CMYK_TRANSFORM = ImageCms.buildTransformFromOpenProfiles(
+    ImageCms.getOpenProfile(CMYK_PARAMS['rgb_icc']),
+    ImageCms.getOpenProfile(CMYK_PARAMS['cmyk_icc']),
+    inMode='RGB', outMode='CMYK',
+    renderingIntent=CMYK_PARAMS['renderingIntent'],
+    flags=CMYK_PARAMS['flags']
+)
 
-def cmyk_to_rgb(cmyk_colors, cmyk_profile, rgb_profile):
+
+def cmyk_to_rgb(cmyk_colors):
     """
     Convert CMYK colors to RGB using ICC profiles.
 
     :param cmyk_colors: List of CMYK colors to convert, where each color is a list of four integers [C, M, Y, K],
                         or a single color list.
-    :param cmyk_profile: Path to the ICC profile for the CMYK color space.
-    :param rgb_profile: Path to the ICC profile for the target RGB color space.
     :return: List of converted RGB colors, where each color is a list [R, G, B] with values in the range 0.0-1.0.
     """
-    transform = ImageCms.buildTransformFromOpenProfiles(
-        ImageCms.getOpenProfile(cmyk_profile),
-        ImageCms.getOpenProfile(rgb_profile),
-        inMode='CMYK', outMode='RGB',
-        renderingIntent=CMYK_PARAMS['renderingIntent'],
-        flags=CMYK_PARAMS['flags']
-    )
-
     # Ensure input is a 2D array and scale to 0-255
     cmyk_array = (np.atleast_2d(cmyk_colors) * 255.0).astype(np.uint8).reshape(-1, 1, 4)
     cmyk_image = Image.fromarray(cmyk_array, 'CMYK')
 
-    rgb_image = ImageCms.applyTransform(cmyk_image, transform)
+    rgb_image = ImageCms.applyTransform(cmyk_image, CMYK_TO_RGB_TRANSFROM)
     rgb_colors = np.array(rgb_image).reshape(-1, 3) / 255.0
     rgb_colors = np.clip(rgb_colors, 0.0, 1.0)
 
@@ -154,29 +159,19 @@ def cmyk_to_rgb(cmyk_colors, cmyk_profile, rgb_profile):
     return rgb_colors
 
 
-def rgb_to_cmyk(rgb_colors, rgb_profile, cmyk_profile):
+def rgb_to_cmyk(rgb_colors):
     """
     Convert RGB colors to CMYK using ICC profiles.
 
     :param rgb_colors: List of RGB colors to convert, where each color is a list of three floats [R, G, B],
                        or a single color list with values in the range 0.0-1.0.
-    :param rgb_profile: Path to the ICC profile for the RGB color space.
-    :param cmyk_profile: Path to the ICC profile for the target CMYK color space.
     :return: List of converted CMYK colors, where each color is a list [C, M, Y, K] with values in the range 0.0-1.0.
     """
-    transform = ImageCms.buildTransformFromOpenProfiles(
-        ImageCms.getOpenProfile(rgb_profile),
-        ImageCms.getOpenProfile(cmyk_profile),
-        inMode='RGB', outMode='CMYK',
-        renderingIntent=CMYK_PARAMS['renderingIntent'],
-        flags=CMYK_PARAMS['flags']
-    )
-
     # Ensure input is a 2D array and scale to 0-255
     rgb_array = (np.atleast_2d(rgb_colors) * 255.0).astype(np.uint8).reshape(-1, 1, 3)
     rgb_image = Image.fromarray(rgb_array, 'RGB')
 
-    cmyk_image = ImageCms.applyTransform(rgb_image, transform)
+    cmyk_image = ImageCms.applyTransform(rgb_image, RGB_TO_CMYK_TRANSFORM)
     cmyk_colors = np.array(cmyk_image).reshape(-1, 4) / 255.0
     cmyk_colors = np.clip(cmyk_colors, 0.0, 1.0)
 
@@ -206,14 +201,14 @@ def auto_convert(a, source='sRGB', target='CIE XYZ'):
             a = np.column_stack((a, np.zeros((a.shape[0], 1))))
         elif a.shape == (3, 1):
             a = np.vstack((a, [0]))
-        rgb = cmyk_to_rgb(a, CMYK_PARAMS['cmyk_icc'], CMYK_PARAMS['rgb_icc'])
+        rgb = cmyk_to_rgb(a)
         if is_1d:
             rgb = rgb.flatten()
         return auto_convert(rgb, CMYK_PARAMS['intermediate_space'], target)
 
     if target in ['CMYK', 'CMY']:
         rgb = auto_convert(a, source, CMYK_PARAMS['intermediate_space'])
-        return rgb_to_cmyk(rgb, CMYK_PARAMS['rgb_icc'], CMYK_PARAMS['cmyk_icc'])
+        return rgb_to_cmyk(rgb)
 
     # Remove CAM space's extra '-'
     if source in CAM_SPACES:
@@ -791,8 +786,6 @@ def multi_run(nums, given_colors=None,
     best_points = None
     best_hexs = None
     best_dmin = None
-    # bounds = get_boundary_hull(color_space, workspace=uniform_space, hull_type=kwargs.get('hull_type', None))
-    # kwargs.update({'bounds': bounds})
 
     with ProcessPoolExecutor(max_workers=None) as executor:
         futures = {
