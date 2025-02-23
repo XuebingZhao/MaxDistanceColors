@@ -13,7 +13,6 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import colour
 import open3d as o3d
 
-
 # Resize factor for brightness
 KL = 1.0
 # Maximize contrast between adjacent colors in the output list
@@ -300,7 +299,7 @@ def get_boundary_hull(bound_space='sRGB', workspace='CAM16LCD', res=11, show=Fal
         table = auto_convert(auto_convert(table, workspace, bound_space), bound_space, workspace)
     table[:, 0] *= KL
 
-    hull, scene = _o3d_build_bound(table, 1.5/res)
+    hull, scene = _o3d_build_bound(table, 1.5 / res)
 
     if show:
         validate_result(table, workspace, workspace, hull, show=True)
@@ -466,16 +465,16 @@ def sa_arrange(p):
     :return: np.array of arranged points
     """
     n = p.shape[0]
-    if n <= 1:
+    if n <= 2:
         return p.copy()
 
     initial_temp = 1
     cooling_rate = 0.99
-    min_temp = 1e-2/(n**2)
-    iterations_per_temp = min(max(1, int(n/5)), 100)
+    min_temp = 1e-2 / (n ** 2)
+    iterations_per_temp = min(max(1, int(n / 5)), 100)
 
     # Initialize the current permutation by greedy method
-    current_perm = p    # arrange_points(p)
+    current_perm = p  # arrange_points(p)
     current_min_dist = _compute_min_distance(current_perm)
 
     best_perm = current_perm.copy()
@@ -752,6 +751,17 @@ def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16
     return hex_colors, real_dmin
 
 
+def smart_job_list(jobs, ref_workers):
+    last_group_jobs = jobs % ref_workers
+    if 0 < last_group_jobs < ref_workers / 2:
+        return smart_job_list(jobs, ref_workers - 1)
+
+    full_groups = jobs // ref_workers
+    job_list = [ref_workers] * full_groups + ([last_group_jobs] if last_group_jobs != 0 else [])
+
+    return job_list
+
+
 def multi_run(nums, given_colors=None,
               color_space='sRGB', uniform_space='CAM16LCD', quality="fast", num_runs=20, show=True, **kwargs):
     _color_space = color_space
@@ -765,7 +775,8 @@ def multi_run(nums, given_colors=None,
     best_hexs = None
     best_dmin = None
 
-    with ProcessPoolExecutor(max_workers=None) as executor:
+    workers = smart_job_list(num_runs, ref_workers=os.cpu_count() // 2 - 1)[0]
+    with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(
                 run, nums, given_colors, color_space, uniform_space, quality, seed=i, **kwargs

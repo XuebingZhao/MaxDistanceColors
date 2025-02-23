@@ -133,7 +133,7 @@ if __name__ == '__main__':
                 new_row = [row[0], row[1], *row[2]]
                 writer.writerow(new_row)
 ```
-使用[result/Colors.xlsm](result/Colors.xlsm)文件可以得到如下所示的结果：
+使用[result/Colors.xlsm](result/Colors.xlsm)文件可以得到如下所示的渲染结果：
 ![batch_run_result.png](example/batch_run_result.png)
 
 ------------
