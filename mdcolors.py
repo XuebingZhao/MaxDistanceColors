@@ -6,12 +6,15 @@ from time import perf_counter as timer
 from PIL import Image, ImageCms
 
 import numpy as np
-from scipy.spatial import cKDTree
+from scipy.spatial import KDTree
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import colour
 import open3d as o3d
+
+from my_utils import profile
+
 
 # Resize factor for brightness
 KL = 1.0
@@ -95,15 +98,13 @@ SIM_PARAMS = {
         't_end': 500,
         'steps': 20000,
         't_tol': 0.0005,
-        'skip': 2,
         'damping': 0.95
     },
     'medium': {
         'dt': 0.0001,
         't_end': 1000,
-        'steps': 100000,
+        'steps': 50000,
         't_tol': 0.0002,
-        'skip': 3,
         'damping': 0.99
     },
     'slow': {
@@ -111,7 +112,6 @@ SIM_PARAMS = {
         't_end': 2000,
         'steps': 300000,
         't_tol': 0.00005,
-        'skip': 1,
         'damping': 0.998
     },
 }
@@ -229,12 +229,34 @@ def auto_convert(a, source='sRGB', target='CIE XYZ'):
         return auto_convert(XYZ, 'CIE XYZ', target)
 
     # Convert from other spaces to DIN99
-    if target in ['DIN99d', 'DIN99c', 'DIN99d']:
+    if target in ['DIN99b', 'DIN99c', 'DIN99d']:
         XYZ = auto_convert(a, source, 'CIE XYZ')
         return colour.XYZ_to_DIN99(XYZ, method=target)
 
     # Convert between non-RGB spaces
     return colour.convert(a, source, target)
+
+
+def deltaE(color_a, color_b, color_space='sRGB', method='CIE 2000') -> np.ndarray[float] | float:
+    if method in ['CIE 1976', 'CIE 1994', 'CIE 2000', 'CMC', 'DIN99']:
+        method_space = 'CIE Lab'
+    elif method in ['ITP']:
+        method_space = 'ICtCp'
+    elif method in ['CAM02-LCD', 'CAM02-SCD', 'CAM02-UCS', 'CAM16-LCD', 'CAM16-SCD', 'CAM16-UCS']:
+        method_space = method.replace('-', '')
+    else:
+        raise ValueError(f"Unsupported deltaE method: {method}")
+
+    if color_space != method_space:
+        color_a = auto_convert(color_a, color_space, method_space)
+        color_b = auto_convert(color_b, color_space, method_space)
+
+    delta_e = colour.delta_E(color_a, color_b, method=method)
+
+    if method_space not in ['CIE Lab', 'ICtCp']:
+        delta_e *= 100
+
+    return delta_e
 
 
 def _o3d_contains(scene, points):
@@ -450,7 +472,7 @@ def arrange_points(p):
     return np.array(path)
 
 
-def _compute_min_distance(perm):
+def _compute_dmin_in_list(perm):
     """Calculate the minimum distance between adjacent points in the arrangement"""
     if len(perm) < 2:
         return 0
@@ -475,7 +497,7 @@ def sa_arrange(p):
 
     # Initialize the current permutation by greedy method
     current_perm = p  # arrange_points(p)
-    current_min_dist = _compute_min_distance(current_perm)
+    current_min_dist = _compute_dmin_in_list(current_perm)
 
     best_perm = current_perm.copy()
     best_min_dist = current_min_dist
@@ -488,7 +510,7 @@ def sa_arrange(p):
             new_perm = current_perm.copy()
             new_perm[[i, j]] = new_perm[[j, i]]
 
-            new_min_dist = _compute_min_distance(new_perm)
+            new_min_dist = _compute_dmin_in_list(new_perm)
 
             # Metropolis criterion
             delta = current_min_dist - new_min_dist
@@ -506,9 +528,82 @@ def sa_arrange(p):
     return best_perm
 
 
+def compute_min_distance(pos, tree=None):
+    if tree is None:
+        tree = KDTree(pos)
+    dists, _ = tree.query(pos, k=2, workers=1)  # k=2 to exclude self
+    return np.min(dists[:, 1])  # Minimum distance to nearest neighbor
+
+
+def simulated_annealing(pos, t_initial=8E-4, t_final=1E-10, cooling_rate=0.998, steps=10000, num_fixed=1, **bound_kwargs):
+    """
+    Simulated annealing version to maximize minimum distance between particles.
+
+    :param pos: Initial points
+    :param t_initial: Initial temperature
+    :param t_final: Final temperature
+    :param cooling_rate: Geometric cooling factor (0 < cooling_rate < 1)
+    :param steps: Maximum number of iterations
+    :param num_fixed: Number of particles to be fixed
+    """
+    # Initial setup
+    current_min_dist = compute_min_distance(pos)
+    best_pos = pos.copy()
+    best_min_dist = current_min_dist
+    all_dmin = []
+
+    # Simulated annealing parameters
+    temperature = t_initial
+    iteration = 0
+
+    while temperature > t_final and iteration < steps:
+        # Propose a new configuration by perturbing a random particle
+        new_pos = pos.copy()
+        # movable_indices = np.random.randint(num_fixed, len(pos))
+        movable_indices = np.random.choice(range(num_fixed, len(pos)), size=min(len(pos)-num_fixed, 1), replace=False)
+        # movable_indices = range(num_fixed, len(pos))
+        perturbations = np.random.normal(0, 1.0*best_min_dist*temperature**0.5, size=(len(movable_indices), 3))
+        new_pos[movable_indices] += perturbations
+
+        # Boundary check
+        out_of_bounds = ~in_bounds(new_pos[movable_indices], **bound_kwargs)
+        if np.all(out_of_bounds):
+            continue
+
+        new_pos[movable_indices] = np.where(out_of_bounds[:, None], pos[movable_indices], new_pos[movable_indices])
+
+        # if not in_bounds(new_pos[movable_indices], **bound_kwargs):
+        #     continue
+
+        # Evaluate new configuration
+        new_min_dist = compute_min_distance(new_pos)
+        # Energy difference (negative because we maximize distance)
+        delta_energy = -(new_min_dist - current_min_dist)
+
+        # Acceptance probability
+        if delta_energy < 0 or np.random.rand() < np.exp(-delta_energy / temperature):
+            pos = new_pos
+            current_min_dist = new_min_dist
+
+            # Update best solution if improved
+            if current_min_dist > best_min_dist:
+                best_pos = pos.copy()
+                best_min_dist = current_min_dist
+
+        # Cooling schedule
+        temperature *= cooling_rate
+        iteration += 1
+
+        # Record data periodically (e.g., every 10 steps)
+        if iteration % 10 == 0:
+            all_dmin.append(current_min_dist)
+
+    return best_pos, np.array(all_dmin)
+
+
 def maximize_delta_e(
         num, p0=None, source='sRGB', uniform='CAM16LCD',
-        dt=1E-4, t_end=1000, t_tol=1E-4, steps=1000, skip=10, damping=0.99,
+        dt=1E-4, t_end=1000, t_tol=1E-4, steps=1000, damping=0.99,
         seed=None, **kwargs):
     """
     Main function to maximize deltaE.
@@ -521,7 +616,6 @@ def maximize_delta_e(
     :param t_end: End time.
     :param t_tol: Tolerance for the maximum change in position when updating the timestep.
     :param steps: Maximum number of steps to simulate.
-    :param skip: Number of steps to skip between each update of the KTree, minmium distance, and step size.
     :param damping: Damping factor for the velocity.
     :param seed: Random seed.
     :return: Generated colors and their corresponding time and step values.
@@ -548,20 +642,18 @@ def maximize_delta_e(
     p0[:, 0] *= KL
 
     # Initialize the positions and velocities of the colors points.
-    pos = _init_points(num - p0.shape[0], in_bounds, seed=seed, **bound_kwargs)
-    if p0.shape[0] > 0:
+    pos = _init_points(num - num_fixed, in_bounds, seed=seed, **bound_kwargs)
+    if num_fixed > 0:
         pos = np.vstack([p0, pos])
     vel = np.zeros_like(pos, dtype=np.float32)
 
     # Initialize the KDTree and other variables
     time = 0
     step = dt
-    all_time = []
-    d_mins = []
-    max_dmin = 0
-    best_pos = pos
-    all_step = []
-    tree = cKDTree(pos)
+    best_pos = pos.copy()
+    best_dmin = compute_min_distance(pos)
+    all_dmin = []
+    tree = KDTree(pos)
 
     # Main simulation loop
     for i in range(steps):
@@ -572,49 +664,52 @@ def maximize_delta_e(
         new_pos, new_vel = _update_positions(pos, vel, forces, step, damping=damping)
         new_pos, new_vel = _deal_out_of_bounds(new_pos, new_vel, step, **bound_kwargs)
 
-        if i % skip == 0:
-            # Update the KDTree
-            tree = cKDTree(new_pos)
+        # Update the KDTree
+        tree = KDTree(new_pos)
 
-            # Calculate the minimum distance between points
-            dists, _ = tree.query(new_pos, k=2)  # k=2 是为了排除自身
-            dmin = np.min(dists[:, 1])  # 最近邻距离中最小的非自身距离
-            d_mins.append(dmin)
+        # Calculate the minimum distance between points
+        dmin = compute_min_distance(new_pos, tree)
 
-            # Update the timestep
-            max_deltas = np.max(np.linalg.norm(new_pos - pos, axis=1))
-            if max_deltas < t_tol:
-                step *= 1.2
-            elif step > dt:
-                step /= 1.2
+        # Update the timestep
+        # t_tol = min(t_tol, 10/(i+1))
+        max_deltas = np.max(np.linalg.norm(new_pos - pos, axis=1))
+        if max_deltas < t_tol:
+            step *= 1.2
+        elif step > dt:
+            step /= 1.2
 
-            all_step.append(step)
-            all_time.append(time + step)
-
-            if dmin > max_dmin:
-                max_dmin = dmin
-                best_pos = new_pos
+        if dmin > best_dmin:
+            best_dmin = dmin
+            best_pos = new_pos
 
         time += step
         pos = new_pos
         vel = new_vel
 
+        # Record data periodically (e.g., every 10 steps)
+        if i % 10 == 0:
+            all_dmin.append(dmin)
+
+    # Fine tune the colors by simulated annealing
+    best_pos, all_dmin_sa = simulated_annealing(best_pos, num_fixed=num_fixed, **bound_kwargs)
+    all_dmin = np.hstack([all_dmin, all_dmin_sa])
+
     # Rearrange the points by distance from the first point
-    dists = np.linalg.norm(best_pos - best_pos[0], axis=1)
-    best_pos = best_pos[np.argsort(dists)]
+    dists_to_start = np.linalg.norm(best_pos - best_pos[0], axis=1)
+    best_pos = best_pos[np.argsort(dists_to_start)]
+    # Arrange the points to maximize contrast
     if MAX_ADJ_CONTRAST:
         best_pos[0:] = sa_arrange(best_pos[0:])
 
     # Convert the colors back to the source space
-    # For CMY space, convert back to sRGB
+    # For CMY space, convert back to sRGB if output_cmyk is False
     if source in ['CMY', 'CMYK'] and not CMYK_PARAMS['output_cmyk']:
         source = 'sRGB'
     best_pos[:, 0] /= KL
     colors = auto_convert(best_pos, uniform, source)
     colors = np.clip(colors, 0, 1)
-    # print(f"Max and Min values: {np.max(colors)}, {np.min(colors)}")
 
-    return np.array(all_time), np.array(d_mins) * 100, np.array(colors), np.array(all_step)
+    return np.array(colors), all_dmin * 100
 
 
 def _get_space_labels(target_space):
@@ -658,11 +753,20 @@ def _setup_3d_axes(ax: plt.Axes, labels):
 
 def validate_result(points, source_space, target_space, hull=None, show=False):
     pos = auto_convert(points, source_space, target_space)
-    _pos = pos
+    _pos = pos.copy()
     _pos[:, 0] *= KL
-    tree = cKDTree(_pos)
-    dists, _ = tree.query(_pos, k=2)
-    de_min = np.min(dists[:, 1])
+    tree = KDTree(_pos)
+    dists, nbr_idxs = tree.query(_pos, k=[2])
+    dists = dists[:, 0] * 100.0
+
+    # check deltaE CIE2000
+    # nbrs = points[nbr_idxs[:, 0]]
+    # de_forward = deltaE(points, nbrs, source_space)
+    # de_backward = deltaE(nbrs, points, source_space)
+    # dists = np.min([de_forward, de_backward], axis=0)
+
+    print("ΔE(CIE2000) of the points:\n", dists)
+    de_min = np.min(dists)
 
     if show:
         labels = _get_space_labels(target_space)
@@ -680,7 +784,7 @@ def validate_result(points, source_space, target_space, hull=None, show=False):
         # Plot the points in 3D with distances as colors
         fig = plt.figure(figsize=(10, 8))
         ax = fig.add_subplot(111, projection='3d')
-        scatter = ax.scatter(*pos.T, c=dists[:, 1] * 100, cmap='viridis', s=50, alpha=1)
+        scatter = ax.scatter(*pos.T, c=dists, cmap='viridis', s=50, alpha=1)
         ax.plot_trisurf(*points.T, triangles=triangles, alpha=0.5, color='#ccc')
 
         # Add a color bar which maps values to colors
@@ -688,7 +792,7 @@ def validate_result(points, source_space, target_space, hull=None, show=False):
         cbar.set_label(r'$\Delta E$')
 
         # Set labels
-        ax.set_title(rf'$\Delta E_{{min}}={de_min * 100:.2f}$')
+        ax.set_title(rf'$\Delta E_{{min}}={de_min:.2f}$')
         _setup_3d_axes(ax, labels)
 
         # Set the view angle to -z direction
@@ -699,7 +803,7 @@ def validate_result(points, source_space, target_space, hull=None, show=False):
         fig.tight_layout()
         plt.show()
 
-    return de_min * 100.0
+    return de_min
 
 
 def run(nums, given_colors, color_space='sRGB', uniform_space='CAM16LCD', quality='medium', seed=None, **kwargs):
@@ -711,17 +815,17 @@ def run(nums, given_colors, color_space='sRGB', uniform_space='CAM16LCD', qualit
     kwargs.update(SIM_PARAMS.get(quality, SIM_PARAMS['medium']))
 
     # Execute the simulation
-    times, dmin_list, points, _ = maximize_delta_e(
+    colors, dmin_list = maximize_delta_e(
         nums, given_colors, color_space, uniform_space, seed=seed, **kwargs
     )
 
-    # Convert the points to HEX format
-    spoints = points
+    # Convert the colors to HEX format
+    rgb = colors
     if color_space in ["CMYK", "CMY"] and CMYK_PARAMS['output_cmyk']:  # Convert CMYK to sRGB to generate HEX
-        spoints = auto_convert(spoints, color_space, "sRGB")
-    hex_colors = colour.notation.RGB_to_HEX(np.clip(spoints, 0, 1))
+        rgb = auto_convert(rgb, color_space, "sRGB")
+    hex_colors = colour.notation.RGB_to_HEX(np.clip(rgb, 0, 1))
 
-    return hex_colors, dmin_list.max(), points, times, dmin_list
+    return hex_colors, dmin_list.max(), colors, dmin_list
 
 
 def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16LCD', quality="fast", **kwargs):
@@ -730,7 +834,7 @@ def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16
         _color_space = "sRGB"
     # Execute the simulation
     t0 = timer()
-    hex_colors, dmin, points, times, dmin_list = run(
+    hex_colors, dmin, points, dmin_list = run(
         nums, given_colors, color_space, uniform_space, quality, **kwargs
     )
     t1 = timer()
@@ -738,11 +842,11 @@ def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16
     print(f"Best δE: {dmin:.2f}")
 
     # 可视化结果
-    plot_points_and_line(points, times, dmin_list, "Time", r"Minimum $\Delta E$",
-                         _color_space, uniform_space)
     real_dmin = validate_result(points, _color_space, uniform_space,
                                 # show=True,
                                 )
+    plot_points_and_line(points, np.arange(len(dmin_list)), dmin_list, "Steps", r"Minimum $\Delta E$",
+                         _color_space, uniform_space)
     plot_color_palette(hex_colors, points, color_space=color_space,
                        title=rf"{nums} {color_space} colors, $\Delta E_{{min}}={real_dmin:.1f}$ @ {uniform_space}")
 
@@ -784,7 +888,7 @@ def multi_run(nums, given_colors=None,
         }
         for future in as_completed(futures):
             i = futures[future]
-            hex_colors, dmin, points, _, _ = future.result()
+            hex_colors, dmin, points, _ = future.result()
             dmin = validate_result(points, _color_space, uniform_space, show=False)
             print(f"Run {i + 1}/{num_runs} completed with ΔE: {dmin:.2f}")
             if dmin > np.max(dmins):
