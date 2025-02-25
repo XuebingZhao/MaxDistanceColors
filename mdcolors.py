@@ -265,7 +265,7 @@ def deltaE(color_a, color_b, color_space='sRGB', method='CIE 2000') -> np.ndarra
 def _o3d_contains(scene, points):
     t = o3d.core.Tensor([points], dtype=o3d.core.float32)
     distances = scene.compute_signed_distance(t)
-    return distances.numpy()[0] < 0
+    return distances.numpy()[0] < 0.001
 
 
 def _o3d_build_bound(points, alpha=None):
@@ -365,7 +365,7 @@ def _init_points(num, bound_func, seed=None, **kwargs):
     while len(points) < num:
         batch_size = max(num - len(points), 100)  # 一次生成的数量
         batch = np.random.normal(0, 1, (batch_size, 3))
-        batch /= np.linalg.norm(batch, axis=1, keepdims=True)   # 归一化
+        batch /= np.linalg.norm(batch, axis=1, keepdims=True)  # 归一化
         batch *= 0.1
         batch += [0.5, 0, 0]
         # 过滤掉超出边界的点
@@ -541,7 +541,9 @@ def compute_min_distance(pos, tree=None):
     return np.min(dists[:, 1])  # Minimum distance to nearest neighbor
 
 
-def simulated_annealing(pos, t_initial=8E-4, t_final=1E-9, cooling_rate=0.998, steps=20000, num_fixed=1, **bound_kwargs):
+def simulated_annealing(pos, t_initial=8E-4, t_final=1E-9,
+                        cooling_rate=0.998, steps=20000,
+                        num_fixed=1, **bound_kwargs):
     """
     Simulated annealing version to maximize minimum distance between particles.
 
@@ -567,9 +569,9 @@ def simulated_annealing(pos, t_initial=8E-4, t_final=1E-9, cooling_rate=0.998, s
         # Propose a new configuration by perturbing a random particle
         new_pos = pos.copy()
         # movable_indices = np.random.randint(num_fixed, len(pos))
-        movable_indices = np.random.choice(range(num_fixed, len(pos)), size=min(len(pos)-num_fixed, 1), replace=False)
+        movable_indices = np.random.choice(range(num_fixed, len(pos)), size=min(len(pos) - num_fixed, 1), replace=False)
         # movable_indices = range(num_fixed, len(pos))
-        perturbations = np.random.normal(0, 1.0*best_min_dist*temperature**0.5, size=(len(movable_indices), 3))
+        perturbations = np.random.normal(0, 1.0 * best_min_dist * temperature ** 0.5, size=(len(movable_indices), 3))
         new_pos[movable_indices] += perturbations
 
         # Boundary check
@@ -675,7 +677,7 @@ def maximize_delta_e(
         new_pos, new_vel = _deal_out_of_bounds(new_pos, new_vel, step, **bound_kwargs)
 
         # Update the timestep
-        t_tol = min(t_tol, 10/(i+1))
+        t_tol = min(t_tol, 10 / (i + 1))
         max_deltas = np.max(np.linalg.norm(new_pos - pos, axis=1))
         if max_deltas < t_tol:
             step *= 1.2
@@ -719,8 +721,7 @@ def maximize_delta_e(
     best_pos[:, 0] /= KL
     colors = auto_convert(best_pos, uniform, source)
     colors = np.clip(colors, 0, 1)
-    # all_pos = [auto_convert(pos, uniform, source) for pos in all_pos]
-    # all_pos = [np.clip(pos, 0, 1) for pos in all_pos]
+    colors[np.isnan(colors)] = 0
 
     return np.array(colors), all_dmin * 100, all_pos
 
@@ -940,12 +941,13 @@ def plot_points_and_line(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', t
     labels = _get_space_labels(target_space)
 
     # Generate show colors, if ndim > 2, asume the colors are in the tartget space already
+    interm_space = CMYK_PARAMS.get('interm_space', 'sRGB')
     if original_ndim <= 2:
         colors = auto_convert(a, source_space, target_space)
-        show_colors = auto_convert(a, source_space, CMYK_PARAMS.get('interm_space', 'sRGB')) if target_space not in RGB_SPACES else a
+        show_colors = auto_convert(a, source_space, interm_space) if target_space not in RGB_SPACES else a
     else:
         colors = a
-        show_colors = [auto_convert(c, target_space, CMYK_PARAMS.get('interm_space', 'sRGB')) for c in colors]
+        show_colors = [auto_convert(c, target_space, interm_space) for c in colors]
     show_colors = np.clip(show_colors, 0, 1)
 
     # Generate boundary hull
@@ -1084,5 +1086,3 @@ if __name__ == '__main__':
     # multi_run(9, [1, 1, 1], color_space='sRGB', quality='fast', uniform_space='DIN99d', num_runs=16)
     # multi_run(9, [1, 1, 1], color_space='CMYK', quality='fast', num_runs=16)
     # single_run(6)
-
-
