@@ -9,17 +9,17 @@ import numpy as np
 from scipy.spatial import KDTree
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+from matplotlib.animation import FuncAnimation
+from matplotlib.widgets import Button
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import colour
 import open3d as o3d
-
-from my_utils import profile
 
 
 # Resize factor for brightness
 KL = 1.0
 # Maximize contrast between adjacent colors in the output list
-MAX_ADJ_CONTRAST = True
+MAX_ADJ_CONTRAST = False
 # Set Parameters for converting to/from CMYK icc profiles
 cdir = os.path.dirname(os.path.abspath(__file__))
 CMYK_PARAMS = {
@@ -29,11 +29,11 @@ CMYK_PARAMS = {
     # 'renderingIntent': ImageCms.Intent.RELATIVE_COLORIMETRIC,
     # 'renderingIntent': ImageCms.Intent.ABSOLUTE_COLORIMETRIC,
     'flags': ImageCms.Flags.BLACKPOINTCOMPENSATION,
-    # 'intermediate_space': 'ITU-R BT.2020',
+    # 'interm_space': 'ITU-R BT.2020',
     'output_cmyk': True,  # Else output RGB, which might oversaturated.
 }
-CMYK_PARAMS.setdefault('intermediate_space', 'sRGB')
-if CMYK_PARAMS['intermediate_space'] == 'ITU-R BT.2020':
+CMYK_PARAMS.setdefault('interm_space', 'sRGB')
+if CMYK_PARAMS['interm_space'] == 'ITU-R BT.2020':
     CMYK_PARAMS['rgb_icc'] = CMYK_PARAMS['rec2020_icc']
 else:
     CMYK_PARAMS['rgb_icc'] = CMYK_PARAMS['srgb_icc']
@@ -96,23 +96,26 @@ SIM_PARAMS = {
     'fast': {
         'dt': 0.001,
         't_end': 500,
-        'steps': 20000,
-        't_tol': 0.0005,
-        'damping': 0.95
+        'steps': 5000,
+        't_tol': 0.002,
+        'damping': 0.95,
+        'hull_res': 11,
     },
     'medium': {
         'dt': 0.0001,
         't_end': 1000,
-        'steps': 50000,
-        't_tol': 0.0002,
-        'damping': 0.99
+        'steps': 10000,
+        't_tol': 0.001,
+        'damping': 0.99,
+        'hull_res': 15,
     },
     'slow': {
         'dt': 0.0001,
         't_end': 2000,
-        'steps': 300000,
-        't_tol': 0.00005,
-        'damping': 0.998
+        'steps': 100000,
+        't_tol': 0.0002,
+        'damping': 0.998,
+        'hull_res': 17,
     },
 }
 
@@ -197,10 +200,10 @@ def auto_convert(a, source='sRGB', target='CIE XYZ'):
         rgb = cmyk_to_rgb(a)
         if len(np.array(a).shape) == 1:
             rgb = rgb.flatten()
-        return auto_convert(rgb, CMYK_PARAMS['intermediate_space'], target)
+        return auto_convert(rgb, CMYK_PARAMS['interm_space'], target)
 
     if target in ['CMYK', 'CMY']:
-        rgb = auto_convert(a, source, CMYK_PARAMS['intermediate_space'])
+        rgb = auto_convert(a, source, CMYK_PARAMS['interm_space'])
         return rgb_to_cmyk(rgb)
 
     # Remove CAM space's extra '-'
@@ -308,7 +311,7 @@ def get_boundary_hull(bound_space='sRGB', workspace='CAM16LCD', res=11, show=Fal
     """
     x = np.linspace(0, 1, res)
     if bound_space in ['CMYK', 'CMY']:
-        k = np.linspace(0, 1, 5)
+        k = np.linspace(0, 1, int(res * 0.5))
         p = np.array(np.meshgrid(*[x] * 3, k)).reshape(4, -1).T
         boundary_mask = np.any((p == 0) | (p == 1), axis=1)
         sp = p[boundary_mask]
@@ -361,7 +364,10 @@ def _init_points(num, bound_func, seed=None, **kwargs):
     points = np.empty((0, 3), dtype=np.float32)
     while len(points) < num:
         batch_size = max(num - len(points), 100)  # 一次生成的数量
-        batch = np.random.uniform(-1, 1, (batch_size, 3))
+        batch = np.random.normal(0, 1, (batch_size, 3))
+        batch /= np.linalg.norm(batch, axis=1, keepdims=True)   # 归一化
+        batch *= 0.1
+        batch += [0.5, 0, 0]
         # 过滤掉超出边界的点
         valid = bound_func(batch, **kwargs)
         valid_points = batch[valid]
@@ -535,7 +541,7 @@ def compute_min_distance(pos, tree=None):
     return np.min(dists[:, 1])  # Minimum distance to nearest neighbor
 
 
-def simulated_annealing(pos, t_initial=8E-4, t_final=1E-10, cooling_rate=0.998, steps=10000, num_fixed=1, **bound_kwargs):
+def simulated_annealing(pos, t_initial=8E-4, t_final=1E-9, cooling_rate=0.998, steps=20000, num_fixed=1, **bound_kwargs):
     """
     Simulated annealing version to maximize minimum distance between particles.
 
@@ -551,6 +557,7 @@ def simulated_annealing(pos, t_initial=8E-4, t_final=1E-10, cooling_rate=0.998, 
     best_pos = pos.copy()
     best_min_dist = current_min_dist
     all_dmin = []
+    all_pos = [pos.copy()]
 
     # Simulated annealing parameters
     temperature = t_initial
@@ -597,8 +604,9 @@ def simulated_annealing(pos, t_initial=8E-4, t_final=1E-10, cooling_rate=0.998, 
         # Record data periodically (e.g., every 10 steps)
         if iteration % 10 == 0:
             all_dmin.append(current_min_dist)
+            all_pos.append(pos.copy())
 
-    return best_pos, np.array(all_dmin)
+    return best_pos, np.array(all_dmin), np.array(all_pos)
 
 
 def maximize_delta_e(
@@ -625,7 +633,8 @@ def maximize_delta_e(
                          f"Please use a uniform space in:\n {UCS_SPACES}")
 
     # Transform input color space bounds to uniform bounds
-    _, bounds = kwargs.get('bounds', get_boundary_hull(source, workspace=uniform))
+    hull_res = kwargs.get('hull_res', 11)
+    _, bounds = kwargs.get('bounds', get_boundary_hull(source, workspace=uniform, res=hull_res, show=False))
 
     # kwargs for in_bounds function
     bound_kwargs = {'bound_space': source, 'workspace': uniform, 'bounds': bounds}
@@ -635,7 +644,7 @@ def maximize_delta_e(
         p0 = [[]]
     p0 = np.atleast_2d(p0)
     if source in ['CMY', 'CMYK'] and p0.shape[1] == 3:
-        p0 = auto_convert(p0, 'sRGB', uniform)
+        p0 = auto_convert(p0, CMYK_PARAMS.get('interm_space', 'sRGB'), uniform)
     else:
         p0 = auto_convert(p0, source, uniform)
     num_fixed = len(p0)
@@ -653,6 +662,7 @@ def maximize_delta_e(
     best_pos = pos.copy()
     best_dmin = compute_min_distance(pos)
     all_dmin = []
+    all_pos = [pos.copy()]
     tree = KDTree(pos)
 
     # Main simulation loop
@@ -664,35 +674,36 @@ def maximize_delta_e(
         new_pos, new_vel = _update_positions(pos, vel, forces, step, damping=damping)
         new_pos, new_vel = _deal_out_of_bounds(new_pos, new_vel, step, **bound_kwargs)
 
-        # Update the KDTree
-        tree = KDTree(new_pos)
-
-        # Calculate the minimum distance between points
-        dmin = compute_min_distance(new_pos, tree)
-
         # Update the timestep
-        # t_tol = min(t_tol, 10/(i+1))
+        t_tol = min(t_tol, 10/(i+1))
         max_deltas = np.max(np.linalg.norm(new_pos - pos, axis=1))
         if max_deltas < t_tol:
             step *= 1.2
         elif step > dt:
             step /= 1.2
 
-        if dmin > best_dmin:
-            best_dmin = dmin
-            best_pos = new_pos
-
         time += step
         pos = new_pos
         vel = new_vel
 
+        # Update the KDTree
+        tree = KDTree(new_pos)
+
         # Record data periodically (e.g., every 10 steps)
         if i % 10 == 0:
+            # Calculate the minimum distance between points
+            dmin = compute_min_distance(new_pos, tree)
+            if dmin > best_dmin:
+                best_dmin = dmin
+                best_pos = new_pos
+
             all_dmin.append(dmin)
+            all_pos.append(pos.copy())
 
     # Fine tune the colors by simulated annealing
-    best_pos, all_dmin_sa = simulated_annealing(best_pos, num_fixed=num_fixed, **bound_kwargs)
-    all_dmin = np.hstack([all_dmin, all_dmin_sa])
+    best_pos, dmin_sa, pos_sa = simulated_annealing(best_pos, num_fixed=num_fixed, **bound_kwargs)
+    all_dmin = np.concatenate((all_dmin, dmin_sa), axis=0)
+    all_pos = np.concatenate((all_pos, pos_sa), axis=0)
 
     # Rearrange the points by distance from the first point
     dists_to_start = np.linalg.norm(best_pos - best_pos[0], axis=1)
@@ -702,14 +713,16 @@ def maximize_delta_e(
         best_pos[0:] = sa_arrange(best_pos[0:])
 
     # Convert the colors back to the source space
-    # For CMY space, convert back to sRGB if output_cmyk is False
+    # For CMY space, convert back to RGB if output_cmyk is False
     if source in ['CMY', 'CMYK'] and not CMYK_PARAMS['output_cmyk']:
-        source = 'sRGB'
+        source = CMYK_PARAMS.get('interm_space', 'sRGB')
     best_pos[:, 0] /= KL
     colors = auto_convert(best_pos, uniform, source)
     colors = np.clip(colors, 0, 1)
+    # all_pos = [auto_convert(pos, uniform, source) for pos in all_pos]
+    # all_pos = [np.clip(pos, 0, 1) for pos in all_pos]
 
-    return np.array(colors), all_dmin * 100
+    return np.array(colors), all_dmin * 100, all_pos
 
 
 def _get_space_labels(target_space):
@@ -725,9 +738,9 @@ def _swap_labels_and_coords(labels, coords):
     if labels[0][0] in ["L", "J", "I", "Y"]:
         labels = labels[1:] + labels[:1]
         if isinstance(coords, list):
-            coords = [np.roll(arr, -1, axis=1) for arr in coords]
+            coords = [np.roll(arr, -1, axis=-1) for arr in coords]
         else:
-            coords = np.roll(coords, -1, axis=1)
+            coords = np.roll(coords, -1, axis=-1)
     return labels, coords
 
 
@@ -764,8 +777,8 @@ def validate_result(points, source_space, target_space, hull=None, show=False):
     # de_forward = deltaE(points, nbrs, source_space)
     # de_backward = deltaE(nbrs, points, source_space)
     # dists = np.min([de_forward, de_backward], axis=0)
+    # print("ΔE(CIE2000) of the points:\n", dists)
 
-    print("ΔE(CIE2000) of the points:\n", dists)
     de_min = np.min(dists)
 
     if show:
@@ -815,28 +828,27 @@ def run(nums, given_colors, color_space='sRGB', uniform_space='CAM16LCD', qualit
     kwargs.update(SIM_PARAMS.get(quality, SIM_PARAMS['medium']))
 
     # Execute the simulation
-    colors, dmin_list = maximize_delta_e(
+    colors, dmin_list, history = maximize_delta_e(
         nums, given_colors, color_space, uniform_space, seed=seed, **kwargs
     )
 
     # Convert the colors to HEX format
     rgb = colors
-    if color_space in ["CMYK", "CMY"] and CMYK_PARAMS['output_cmyk']:  # Convert CMYK to sRGB to generate HEX
-        rgb = auto_convert(rgb, color_space, "sRGB")
+    if color_space in ["CMYK", "CMY"] and CMYK_PARAMS['output_cmyk']:  # Convert CMYK to RGB to generate HEX
+        rgb = auto_convert(rgb, color_space, CMYK_PARAMS.get('interm_space', 'sRGB'))
     hex_colors = colour.notation.RGB_to_HEX(np.clip(rgb, 0, 1))
 
-    return hex_colors, dmin_list.max(), colors, dmin_list
+    return hex_colors, dmin_list.max(), colors, dmin_list, history
 
 
 def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16LCD', quality="fast", **kwargs):
     _color_space = color_space
     if color_space in ["CMYK", "CMY"] and not CMYK_PARAMS['output_cmyk']:
-        _color_space = "sRGB"
+        _color_space = CMYK_PARAMS.get('interm_space', 'sRGB')
     # Execute the simulation
     t0 = timer()
-    hex_colors, dmin, points, dmin_list = run(
-        nums, given_colors, color_space, uniform_space, quality, **kwargs
-    )
+    hex_colors, dmin, points, dmin_list, history = run(
+        nums, given_colors, color_space, uniform_space, quality, **kwargs)
     t1 = timer()
     print(f"Total time: {(t1 - t0) * 1000:.2f} ms")
     print(f"Best δE: {dmin:.2f}")
@@ -845,8 +857,8 @@ def single_run(nums, given_colors=None, color_space='sRGB', uniform_space='CAM16
     real_dmin = validate_result(points, _color_space, uniform_space,
                                 # show=True,
                                 )
-    plot_points_and_line(points, np.arange(len(dmin_list)), dmin_list, "Steps", r"Minimum $\Delta E$",
-                         _color_space, uniform_space)
+    plot_points_and_line(history, np.arange(len(dmin_list)), dmin_list, "Steps", r"Minimum $\Delta E$",
+                         _color_space, uniform_space, **kwargs)
     plot_color_palette(hex_colors, points, color_space=color_space,
                        title=rf"{nums} {color_space} colors, $\Delta E_{{min}}={real_dmin:.1f}$ @ {uniform_space}")
 
@@ -870,11 +882,11 @@ def multi_run(nums, given_colors=None,
               color_space='sRGB', uniform_space='CAM16LCD', quality="fast", num_runs=20, show=True, **kwargs):
     _color_space = color_space
     if color_space in ["CMYK", "CMY"] and not CMYK_PARAMS['output_cmyk']:
-        _color_space = "sRGB"
+        _color_space = CMYK_PARAMS.get('interm_space', 'sRGB')
 
     # Execute the simulation
     t0 = timer()
-    dmins = [0]
+    dmins = []
     best_points = None
     best_hexs = None
     best_dmin = None
@@ -888,10 +900,10 @@ def multi_run(nums, given_colors=None,
         }
         for future in as_completed(futures):
             i = futures[future]
-            hex_colors, dmin, points, _ = future.result()
+            hex_colors, dmin, points, _, _ = future.result()
             dmin = validate_result(points, _color_space, uniform_space, show=False)
             print(f"Run {i + 1}/{num_runs} completed with ΔE: {dmin:.2f}")
-            if dmin > np.max(dmins):
+            if best_dmin is None or dmin > best_dmin:
                 best_points = points
                 best_hexs = hex_colors
                 best_dmin = dmin
@@ -919,20 +931,26 @@ def multi_run(nums, given_colors=None,
     return best_hexs, best_dmin
 
 
-def plot_points_and_line(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_space='CIE xyY'):
+def plot_points_and_line(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', target_space='CIE xyY', **kwargs):
     colour.set_domain_range_scale("1")
-    a = np.array(a)
+
+    original_ndim = a.ndim
 
     # Set plot labels
     labels = _get_space_labels(target_space)
 
-    # Generate show colors
-    colors = auto_convert(a, source_space, target_space)
-    show_colors = auto_convert(a, source_space, 'sRGB') if target_space not in RGB_SPACES else a
+    # Generate show colors, if ndim > 2, asume the colors are in the tartget space already
+    if original_ndim <= 2:
+        colors = auto_convert(a, source_space, target_space)
+        show_colors = auto_convert(a, source_space, CMYK_PARAMS.get('interm_space', 'sRGB')) if target_space not in RGB_SPACES else a
+    else:
+        colors = a
+        show_colors = [auto_convert(c, target_space, CMYK_PARAMS.get('interm_space', 'sRGB')) for c in colors]
     show_colors = np.clip(show_colors, 0, 1)
 
     # Generate boundary hull
-    hull, _ = get_boundary_hull(source_space, workspace=target_space)
+    hull_res = SIM_PARAMS.get(kwargs.get('quality', 'fast'), None).get('hull_res', 11)
+    hull, _ = get_boundary_hull(source_space, workspace=target_space, res=hull_res)
     points = np.asarray(hull.vertices, dtype=np.float32)
     points[:, 0] /= KL
     triangles = np.asarray(hull.triangles, dtype=np.int32)
@@ -942,13 +960,13 @@ def plot_points_and_line(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', t
 
     fig = plt.figure(figsize=(12, 6))
     ax = fig.add_subplot(1, 2, 1, projection='3d')
-    ax.scatter(*colors.T, c=show_colors, marker='o', alpha=0.8)
-    ax.plot_trisurf(*points.T, triangles=triangles, alpha=0.4, color='w')
+    ax_2 = fig.add_subplot(1, 2, 2)
 
+    scatter = ax.scatter([], [], [], marker='o', alpha=1.0)
+    ax.plot_trisurf(*points.T, triangles=triangles, alpha=0.4, color='w')
     ax.set_title(f"Points in {target_space} space")
     _setup_3d_axes(ax, labels)
 
-    ax_2 = fig.add_subplot(1, 2, 2)
     if len(x) > 100:
         ax_2.semilogx(x, y, label=ylabel, color='tab:blue')
     else:
@@ -957,8 +975,45 @@ def plot_points_and_line(a, x, y, xlabel="X", ylabel="Y", source_space='sRGB', t
     ax_2.set_xlabel(xlabel)
     ax_2.set_ylabel(ylabel)
     ax_2.legend()
-
     fig.tight_layout()
+
+    if original_ndim == 3:
+        playing = [True]
+        max_show_frames = 300
+        speed_factor = max(int(len(a) / max_show_frames), 1)
+
+        def _init():
+            scatter._offsets3d = ([], [], [])
+            return scatter,
+
+        colors = colors[::speed_factor]
+        show_colors = show_colors[::speed_factor]
+
+        def update(frame):
+            p = colors[frame]
+            scatter._offsets3d = (p[:, 0], p[:, 1], p[:, 2])
+            scatter.set_color(c=show_colors[frame])
+            return scatter,
+
+        ani = FuncAnimation(
+            fig, update, frames=len(colors), init_func=_init, blit=False,
+            interval=33
+        )
+
+        ax_button = plt.axes((0.05, 0.9, 0.1, 0.04))  # 按钮位置 [left, bottom, width, height]
+        button = Button(ax_button, 'Pause/Play')
+
+        def toggle_play(e):
+            if playing[0]:
+                ani.event_source.stop()
+            else:
+                ani.event_source.start()
+            playing[0] = not playing[0]
+
+        button.on_clicked(toggle_play)
+    else:
+        ax.scatter(colors[:, 0], colors[:, 1], colors[:, 2], marker='o', alpha=1.0, c=show_colors)
+
     plt.show()
 
 
@@ -976,7 +1031,8 @@ def plot_color_palette(hex_colors, original, color_space='sRGB', title="Color Pa
         scale_range = 100
         if not CMYK_PARAMS['output_cmyk']:
             hex_colors = np.array(hex_colors, dtype=str)
-            original = auto_convert(colour.notation.HEX_to_RGB(hex_colors), 'sRGB', 'CMYK')
+            hex_to_rgb = colour.notation.HEX_to_RGB(hex_colors)
+            original = auto_convert(hex_to_rgb, CMYK_PARAMS.get('interm_space', 'sRGB'), 'CMYK')
 
     n_colors = len(hex_colors)
     if n_colors > 256:
@@ -1019,7 +1075,7 @@ def plot_color_palette(hex_colors, original, color_space='sRGB', title="Color Pa
 
 if __name__ == '__main__':
     ### Single function test.
-    # print(100*auto_convert([0.95, 0.95, 0.95, 0], 'CMYK', 'CAM16LCD'))
+    # print(255*auto_convert([0.38, 0.0, 0.0], 'CAM16UCS', 'sRGB'))
     get_boundary_hull("sRGB", "CIE Lab", 11, show=True)
 
     ### Run the simulation.
@@ -1028,3 +1084,5 @@ if __name__ == '__main__':
     # multi_run(9, [1, 1, 1], color_space='sRGB', quality='fast', uniform_space='DIN99d', num_runs=16)
     # multi_run(9, [1, 1, 1], color_space='CMYK', quality='fast', num_runs=16)
     # single_run(6)
+
+
